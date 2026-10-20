@@ -669,11 +669,6 @@ function App() {
         }, { merge: true })
         batch.update(employeeRef, ledgerUpdate)
         batch.update(rosterRef, ledgerUpdate)
-        batch.set(doc(firestore, 'employee_sync_queue', profile.email.toLowerCase()), {
-          email: profile.email.toLowerCase(),
-          status: 'pending',
-          updatedAt: serverTimestamp(),
-        })
         await batch.commit()
       } else {
         const batch = writeBatch(firestore)
@@ -691,12 +686,18 @@ function App() {
         })
         batch.update(employeeRef, ledgerUpdate)
         batch.update(rosterRef, ledgerUpdate)
-        batch.set(doc(firestore, 'employee_sync_queue', profile.email.toLowerCase()), {
+        await batch.commit()
+      }
+      let sheetSyncQueued = true
+      try {
+        await setDoc(doc(firestore, 'employee_sync_queue', profile.email.toLowerCase()), {
           email: profile.email.toLowerCase(),
           status: 'pending',
           updatedAt: serverTimestamp(),
         })
-        await batch.commit()
+      } catch (error) {
+        sheetSyncQueued = false
+        console.error('The order was saved, but employee Sheet synchronization could not be queued.', error)
       }
       setProfile((current) => ({
         ...current,
@@ -712,7 +713,9 @@ function App() {
       setEditingOrderId(null)
       setActiveOrder(order)
       setScreen('receipt')
-      setNotice('تم تأكيد طلبك. سيظهر للمسؤولين في لوحة الإدارة ويُرسل إشعارهم بعد المزامنة.')
+      setNotice(sheetSyncQueued
+        ? 'تم تأكيد طلبك. سيظهر للمسؤولين في لوحة الإدارة ويُرسل إشعارهم بعد المزامنة.'
+        : 'تم تأكيد طلبك وحُفظ الإنفاق، لكن تعذرت إضافة تحديث Google Sheets. أبلغ مسؤول النظام لمزامنة السجل.')
     } catch (error) {
       console.error('Unable to submit the employee order to Firestore.', error)
       setNotice(orderSubmissionErrorMessage(error))
