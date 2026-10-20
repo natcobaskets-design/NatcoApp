@@ -1,0 +1,629 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function adminPath() {
+      return /databases/$(database)/documents/admin_users/$(request.auth.uid);
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(adminPath())
+        && get(adminPath()).data.active == true;
+    }
+
+    function rosterPath() {
+      return /databases/$(database)/documents/employee_roster/$(request.auth.token.email);
+    }
+
+    function hasActiveRosterEntry() {
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email is string
+        && exists(rosterPath())
+        && get(rosterPath()).data.active == true;
+    }
+
+    function isApprovedEmployee() {
+      return hasActiveRosterEntry();
+    }
+
+    function matchesEmployeeCode(code) {
+      return isApprovedEmployee()
+        && get(rosterPath()).data.employeeCode == code;
+    }
+
+    function validBasketCounts(baskets) {
+      return baskets is map
+        && baskets.keys().hasOnly(['essential', 'family'])
+        && baskets.get('essential', 0) is int
+        && baskets.get('family', 0) is int
+        && baskets.get('essential', 0) >= 0
+        && baskets.get('family', 0) >= 0
+        && baskets.get('essential', 0) <= 2
+        && baskets.get('family', 0) <= 2
+        && baskets.get('essential', 0) + baskets.get('family', 0) >= 1
+        && baskets.get('essential', 0) + baskets.get('family', 0) <= 2;
+    }
+
+    function countBasketSelections(ids, basketId) {
+      return (ids.size() > 0 && ids[0] == basketId ? 1 : 0)
+        + (ids.size() > 1 && ids[1] == basketId ? 1 : 0)
+        + (ids.size() > 2 && ids[2] == basketId ? 1 : 0)
+        + (ids.size() > 3 && ids[3] == basketId ? 1 : 0)
+        + (ids.size() > 4 && ids[4] == basketId ? 1 : 0)
+        + (ids.size() > 5 && ids[5] == basketId ? 1 : 0)
+        + (ids.size() > 6 && ids[6] == basketId ? 1 : 0)
+        + (ids.size() > 7 && ids[7] == basketId ? 1 : 0)
+        + (ids.size() > 8 && ids[8] == basketId ? 1 : 0)
+        + (ids.size() > 9 && ids[9] == basketId ? 1 : 0);
+    }
+
+    function validBasketAt(ids, index) {
+      let basketId = ids[index];
+      let basketPath = /databases/$(database)/documents/basket_types/$(basketId);
+      let selectedCount = countBasketSelections(ids, basketId);
+      return basketId is string
+        && ((exists(basketPath)
+            && get(basketPath).data.active == true
+            && get(basketPath).data.maxPerEmployee is int
+            && selectedCount <= get(basketPath).data.maxPerEmployee)
+          || (!exists(basketPath)
+            && basketId in ['essential', 'family']
+            && selectedCount <= 2));
+    }
+
+    function validBasketSelection(ids, baskets) {
+      let settingsPath = /databases/$(database)/documents/admin_settings/basket_selection;
+      let maximum = exists(settingsPath)
+        ? get(settingsPath).data.get('maxTotalPerEmployee', 2)
+        : 2;
+      return ids is list
+        && ids.size() > 0
+        && ids.size() <= 10
+        && maximum is int
+        && maximum >= 1
+        && maximum <= 10
+        && ids.size() <= maximum
+        && baskets is map
+        && baskets.size() > 0
+        && baskets.size() <= 10
+        && (ids.size() <= 0 || validBasketAt(ids, 0))
+        && (ids.size() <= 1 || validBasketAt(ids, 1))
+        && (ids.size() <= 2 || validBasketAt(ids, 2))
+        && (ids.size() <= 3 || validBasketAt(ids, 3))
+        && (ids.size() <= 4 || validBasketAt(ids, 4))
+        && (ids.size() <= 5 || validBasketAt(ids, 5))
+        && (ids.size() <= 6 || validBasketAt(ids, 6))
+        && (ids.size() <= 7 || validBasketAt(ids, 7))
+        && (ids.size() <= 8 || validBasketAt(ids, 8))
+        && (ids.size() <= 9 || validBasketAt(ids, 9));
+    }
+
+    function validMonthlySpendMutation(uid, oldSpent, peerPath) {
+      let orderId = request.resource.data.lastSpendOrderId;
+      let orderPath = /databases/$(database)/documents/orders/$(orderId);
+      let orderAfter = getAfter(orderPath).data;
+      let priorOrderAmount = exists(orderPath)
+        ? get(orderPath).data.get('totalAmount', 0)
+        : 0;
+      return orderId is string
+        && orderAfter.uid == uid
+        && orderAfter.status == 'received'
+        && orderAfter.totalAmount is number
+        && (orderAfter.createdAt == request.time || orderAfter.updatedAt == request.time)
+        && orderAfter.profile.get('currentMonthlySpent', 0) == oldSpent
+        && request.resource.data.currentMonthlySpent
+          == oldSpent + orderAfter.totalAmount - priorOrderAmount
+        && request.resource.data.currentMonthlySpent >= 0
+        && getAfter(peerPath).data.lastSpendOrderId == orderId
+        && getAfter(peerPath).data.currentMonthlySpent
+          == request.resource.data.currentMonthlySpent
+        && getAfter(peerPath).data.get('spendingPeriod', '')
+          == request.resource.data.get('spendingPeriod', '')
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['currentMonthlySpent', 'spendingPeriod', 'lastSpendOrderId']);
+    }
+
+    match /admin_users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow write: if false;
+    }
+
+    match /employee_roster/{email} {
+      allow get: if isAdmin()
+        || (signedIn() && request.auth.token.email == email);
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        && (!request.resource.data.keys().hasAny(['company'])
+          || (request.resource.data.company is string
+            && request.resource.data.company.size() > 0
+            && request.resource.data.company.size() <= 80))
+        && (!request.resource.data.keys().hasAny(['monthlySpendingLimit'])
+          || (request.resource.data.monthlySpendingLimit is number
+            && request.resource.data.monthlySpendingLimit >= 0
+            && request.resource.data.monthlySpendingLimit <= 1000000000))
+        && (!request.resource.data.keys().hasAny(['currentMonthlySpent'])
+          || (request.resource.data.currentMonthlySpent is number
+            && request.resource.data.currentMonthlySpent >= 0
+            && request.resource.data.currentMonthlySpent <= 1000000000))
+        && (!request.resource.data.keys().hasAny(['spendingPeriod'])
+          || (request.resource.data.spendingPeriod is string
+            && request.resource.data.spendingPeriod.matches('^[0-9]{4}-[0-9]{2}$')))
+        && (!request.resource.data.keys().hasAny(['branch'])
+          || (request.resource.data.branch is string
+            && request.resource.data.branch.size() <= 80))
+        && (!request.resource.data.keys().hasAny(['province'])
+          || (request.resource.data.province is string
+            && request.resource.data.province.size() <= 80));
+      allow update: if isAdmin()
+        || (signedIn()
+          && request.auth.token.email == email
+          && resource.data.active == true
+          && request.resource.data.get('employeeCode', resource.data.get('employeeCode', ''))
+            == resource.data.get('employeeCode', '')
+          && request.resource.data.get('company', resource.data.get('company', ''))
+            == resource.data.get('company', '')
+          && request.resource.data.get('branch', resource.data.get('branch', ''))
+            == resource.data.get('branch', '')
+          && request.resource.data.get('province', resource.data.get('province', ''))
+            == resource.data.get('province', '')
+          && request.resource.data.get('monthlySpendingLimit', resource.data.get('monthlySpendingLimit', -1))
+            == resource.data.get('monthlySpendingLimit', -1)
+          && validMonthlySpendMutation(
+            request.auth.uid,
+            resource.data.get('currentMonthlySpent', 0),
+            /databases/$(database)/documents/employees/$(request.auth.uid)
+          ));
+      allow delete: if isAdmin();
+    }
+
+    match /employees/{uid} {
+      allow read: if isAdmin()
+        || (signedIn() && request.auth.uid == uid
+          && isApprovedEmployee());
+      allow create: if isAdmin()
+        || (signedIn() && request.auth.uid == uid
+          && isApprovedEmployee()
+          && request.resource.data.keys().hasOnly([
+            'email', 'name', 'address', 'coordinates', 'phone', 'whatsapp'
+          ])
+          && request.resource.data.email == request.auth.token.email
+          && request.resource.data.name is string
+          && request.resource.data.name.size() <= 120
+          && request.resource.data.address is string
+          && request.resource.data.address.size() <= 500
+          && request.resource.data.coordinates is string
+          && request.resource.data.coordinates.size() <= 100
+          && request.resource.data.phone is string
+          && request.resource.data.phone.size() <= 30
+          && request.resource.data.whatsapp is string
+          && request.resource.data.whatsapp.size() <= 30);
+      allow update: if isAdmin()
+        || (signedIn() && request.auth.uid == uid
+          && isApprovedEmployee()
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['name', 'address', 'coordinates', 'phone', 'whatsapp'])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() <= 120
+          && request.resource.data.address is string
+          && request.resource.data.address.size() <= 500
+          && request.resource.data.coordinates is string
+          && request.resource.data.coordinates.size() <= 100
+          && request.resource.data.phone is string
+          && request.resource.data.phone.size() <= 30
+          && request.resource.data.whatsapp is string
+          && request.resource.data.whatsapp.size() <= 30)
+        || (signedIn() && request.auth.uid == uid
+          && isApprovedEmployee()
+          && validMonthlySpendMutation(
+            request.auth.uid,
+            resource.data.get('currentMonthlySpent', 0),
+            rosterPath()
+          ));
+      allow delete: if isAdmin();
+    }
+
+    match /products/{productId} {
+      allow read: if isAdmin() || isApprovedEmployee();
+      allow create, update: if isAdmin()
+        && request.resource.data.imageUrl is string
+        && request.resource.data.imageUrl.size() <= 900000
+        && (!request.resource.data.keys().hasAny(['department'])
+          || (request.resource.data.department is string
+            && request.resource.data.department in [
+              'consumables', 'frozen', 'beverages', 'home-care',
+              'baby-care', 'personal-care', 'snacks', 'spices-dates'
+            ]))
+        && (!request.resource.data.keys().hasAny(['subcategory'])
+          || (request.resource.data.subcategory is string
+            && request.resource.data.subcategory.size() <= 80))
+        && (!request.resource.data.keys().hasAny(['agentPrice'])
+          || (request.resource.data.agentPrice is number
+            && request.resource.data.agentPrice >= 0
+            && request.resource.data.agentPrice <= 1000000000))
+        && (!request.resource.data.keys().hasAny(['companyAgentPrices'])
+          || (request.resource.data.companyAgentPrices is map
+            && request.resource.data.companyAgentPrices.size() <= 50));
+      allow delete: if isAdmin();
+    }
+
+    match /catalog_sync_queue/{productId} {
+      allow read: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasAll([
+          'productId', 'action', 'status', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'productId', 'action', 'status', 'updatedAt'
+        ])
+        && request.resource.data.productId == productId
+        && request.resource.data.action in ['upsert', 'deleted']
+        && request.resource.data.status == 'pending'
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /basket_types/{basketId} {
+      allow get, list: if isAdmin() || isApprovedEmployee();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasAll([
+          'name', 'kind', 'description', 'maxPerEmployee', 'productIds', 'active'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'name', 'kind', 'description', 'maxPerEmployee', 'productIds', 'active',
+          'updatedAt', 'updatedBy'
+        ])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.kind in ['essential', 'family', 'custom']
+        && request.resource.data.description is string
+        && request.resource.data.description.size() <= 160
+        && request.resource.data.maxPerEmployee is int
+        && request.resource.data.maxPerEmployee >= 0
+        && request.resource.data.maxPerEmployee <= 10
+        && request.resource.data.productIds is list
+        && request.resource.data.productIds.size() <= 50
+        && request.resource.data.active is bool
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow get, list: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid
+          && isApprovedEmployee());
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          'reference', 'uid', 'email', 'employeeCode', 'profile',
+          'baskets', 'items', 'itemDetails', 'excluded',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'reference', 'uid', 'email', 'employeeCode', 'profile',
+          'baskets', 'items', 'itemDetails', 'excluded', 'status',
+          'createdAt', 'updatedAt', 'pickupBranch', 'totalAmount', 'currency',
+          'basketSelections'
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && matchesEmployeeCode(request.resource.data.employeeCode)
+        && request.resource.data.profile.email == request.auth.token.email
+        && request.resource.data.profile.employeeCode == request.resource.data.employeeCode
+        && exists(/databases/$(database)/documents/employees/$(request.auth.uid))
+        && request.resource.data.profile.email == get(
+          /databases/$(database)/documents/employees/$(request.auth.uid)
+        ).data.email
+        && request.resource.data.profile.employeeCode == get(
+          /databases/$(database)/documents/employees/$(request.auth.uid)
+        ).data.get('employeeCode', get(rosterPath()).data.employeeCode)
+        && request.resource.data.profile.name == get(
+          /databases/$(database)/documents/employees/$(request.auth.uid)
+        ).data.name
+        && request.resource.data.profile.company == get(rosterPath()).data.company
+        && request.resource.data.profile.branch == get(rosterPath()).data.get(
+          'branch', get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.get('branch', ''))
+        && request.resource.data.profile.get('province', '')
+          == get(rosterPath()).data.get('province', '')
+        && request.resource.data.profile.address == get(
+          /databases/$(database)/documents/employees/$(request.auth.uid)
+        ).data.address
+        && request.resource.data.profile.coordinates == get(
+          /databases/$(database)/documents/employees/$(request.auth.uid)
+        ).data.coordinates
+        && request.resource.data.profile.phone == get(
+          /databases/$(database)/documents/employees/$(request.auth.uid)
+        ).data.phone
+        && request.resource.data.profile.whatsapp == get(
+          /databases/$(database)/documents/employees/$(request.auth.uid)
+        ).data.whatsapp
+        && request.resource.data.profile.get('monthlySpendingLimit', -1)
+          == get(rosterPath()).data.get('monthlySpendingLimit', -1)
+        && request.resource.data.profile.get('currentMonthlySpent', 0)
+          == get(rosterPath()).data.get('currentMonthlySpent', 0)
+        && request.resource.data.profile.get('spendingPeriod', '')
+          == get(rosterPath()).data.get('spendingPeriod', '')
+        && (!get(rosterPath()).data.keys().hasAny(['company'])
+          || request.resource.data.profile.company == get(rosterPath()).data.company)
+        && (!get(rosterPath()).data.keys().hasAny(['monthlySpendingLimit'])
+          || (request.resource.data.totalAmount is number
+            && request.resource.data.totalAmount >= 0
+            && request.resource.data.totalAmount <= get(rosterPath()).data.monthlySpendingLimit
+              - get(rosterPath()).data.get('currentMonthlySpent', 0)))
+        && (!request.resource.data.keys().hasAny(['totalAmount'])
+          || (request.resource.data.totalAmount is number
+            && request.resource.data.totalAmount >= 0
+            && request.resource.data.currency == 'YER'))
+        && (!request.resource.data.keys().hasAny(['pickupBranch'])
+          || (request.resource.data.pickupBranch is string
+            && request.resource.data.pickupBranch.size() > 0
+            && request.resource.data.pickupBranch.size() <= 80))
+        && (!request.resource.data.keys().hasAny(['totalAmount'])
+          || (request.resource.data.profile.get('currentMonthlySpent', 0)
+              == get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.get('currentMonthlySpent', 0)
+            && getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
+              == get(rosterPath()).data.get('currentMonthlySpent', 0) + request.resource.data.totalAmount
+            && getAfter(rosterPath()).data.lastSpendOrderId == orderId
+            && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
+              .data.get('currentMonthlySpent', 0)
+              == get(/databases/$(database)/documents/employees/$(request.auth.uid))
+                .data.get('currentMonthlySpent', 0) + request.resource.data.totalAmount
+            && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
+              .data.lastSpendOrderId == orderId))
+        && (request.resource.data.keys().hasAny(['basketSelections'])
+          ? validBasketSelection(request.resource.data.basketSelections, request.resource.data.baskets)
+          : validBasketCounts(request.resource.data.baskets))
+        && request.resource.data.items is map
+        && request.resource.data.items.size() <= 50
+        && request.resource.data.itemDetails is map
+        && request.resource.data.itemDetails.size() <= 50
+        && request.resource.data.excluded is list
+        && request.resource.data.excluded.size() <= 50
+        && request.resource.data.status == 'received'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if isAdmin()
+        ? request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'updatedAt'])
+          && request.resource.data.status in [
+            'received', 'preparing', 'ready', 'fulfilled', 'cancelled', 'deleted'
+          ]
+          && request.resource.data.updatedAt == request.time
+          && getAfter(
+            /databases/$(database)/documents/order_notifications/$(orderId)
+          ).data.status == 'pending'
+          && getAfter(
+            /databases/$(database)/documents/order_notifications/$(orderId)
+          ).data.eventStatus == request.resource.data.status
+        : signedIn()
+          && resource.data.uid == request.auth.uid
+          && matchesEmployeeCode(resource.data.employeeCode)
+          && resource.data.status == 'received'
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['baskets', 'items', 'itemDetails', 'excluded', 'updatedAt',
+              'pickupBranch', 'totalAmount', 'currency', 'basketSelections'])
+          && (request.resource.data.keys().hasAny(['basketSelections'])
+            ? validBasketSelection(request.resource.data.basketSelections, request.resource.data.baskets)
+            : validBasketCounts(request.resource.data.baskets))
+          && request.resource.data.items is map
+          && request.resource.data.items.size() <= 50
+          && request.resource.data.excluded is list
+          && request.resource.data.excluded.size() <= 50
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['baskets', 'items', 'itemDetails', 'excluded', 'updatedAt',
+              'pickupBranch', 'totalAmount', 'currency', 'basketSelections'])
+          && (!get(rosterPath()).data.keys().hasAny(['monthlySpendingLimit'])
+            || (request.resource.data.totalAmount is number
+              && request.resource.data.totalAmount >= 0
+              && request.resource.data.totalAmount <= get(rosterPath()).data.monthlySpendingLimit
+                - get(rosterPath()).data.get('currentMonthlySpent', 0)
+                + resource.data.get('totalAmount', 0)))
+          && (!request.resource.data.keys().hasAny(['totalAmount'])
+            || (request.resource.data.profile.get('currentMonthlySpent', 0)
+                == get(/databases/$(database)/documents/employees/$(request.auth.uid))
+                  .data.get('currentMonthlySpent', 0)
+              && getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
+                == get(rosterPath()).data.get('currentMonthlySpent', 0)
+                  + request.resource.data.totalAmount - resource.data.get('totalAmount', 0)
+              && getAfter(rosterPath()).data.lastSpendOrderId == orderId
+              && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
+                .data.get('currentMonthlySpent', 0)
+                == get(/databases/$(database)/documents/employees/$(request.auth.uid))
+                  .data.get('currentMonthlySpent', 0)
+                  + request.resource.data.totalAmount - resource.data.get('totalAmount', 0)
+              && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
+                .data.lastSpendOrderId == orderId))
+          && request.resource.data.updatedAt == request.time;
+
+      allow delete: if false;
+    }
+
+    match /order_notifications/{orderId} {
+      allow get, list: if isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly([
+          'orderId', 'uid', 'status', 'eventStatus', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.orderId == orderId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && (!request.resource.data.keys().hasAny(['eventStatus'])
+          || request.resource.data.eventStatus == 'received')
+        && request.resource.data.createdAt == request.time
+        && getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.uid == request.auth.uid
+        && getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.status == 'received'
+        && getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.updatedAt == request.time
+        && (!request.resource.data.keys().hasAny(['updatedAt'])
+          || request.resource.data.updatedAt == request.time);
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly([
+          'orderId', 'uid', 'status', 'eventStatus', 'emailSentAt', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.orderId == orderId
+        && request.resource.data.status == 'pending'
+        && request.resource.data.eventStatus == getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.status
+        && request.resource.data.uid == getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.uid
+        && getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.updatedAt == request.time
+        && request.resource.data.emailSentAt == request.time
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if (isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'eventStatus', 'updatedAt'])
+        && request.resource.data.status == 'pending'
+        && request.resource.data.eventStatus == getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.status
+        && request.resource.data.uid == getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.uid
+        && getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.updatedAt == request.time
+        && request.resource.data.updatedAt == request.time)
+        || (signedIn()
+          && resource.data.uid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'eventStatus', 'createdAt', 'updatedAt'])
+          && request.resource.data.status == 'pending'
+          && request.resource.data.eventStatus == 'received'
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time
+          && getAfter(
+            /databases/$(database)/documents/orders/$(orderId)
+          ).data.uid == request.auth.uid
+          && getAfter(
+            /databases/$(database)/documents/orders/$(orderId)
+          ).data.status == 'received'
+          && getAfter(
+            /databases/$(database)/documents/orders/$(orderId)
+          ).data.updatedAt == request.time);
+      allow delete: if false;
+    }
+
+    match /employee_sync_queue/{email} {
+      allow get, list: if isAdmin();
+      allow create, update: if isAdmin()
+        || (signedIn()
+          && isApprovedEmployee()
+          && request.auth.token.email == email
+          && request.resource.data.keys().hasOnly(['email', 'status', 'updatedAt'])
+          && request.resource.data.email == request.auth.token.email
+          && request.resource.data.status == 'pending'
+          && request.resource.data.updatedAt == request.time);
+      allow delete: if isAdmin();
+    }
+
+    match /profile_change_requests/{requestId} {
+      allow get, list: if isAdmin();
+      allow create: if signedIn()
+        && isApprovedEmployee()
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'employeeCode', 'message', 'status', 'createdAt'
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.employeeCode == get(rosterPath()).data.employeeCode
+        && request.resource.data.message is string
+        && request.resource.data.message.size() > 0
+        && request.resource.data.message.size() <= 1000
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time;
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'reviewedBy', 'reviewedAt'])
+        && request.resource.data.status == 'reviewed'
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt == request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /admin_settings/{settingId} {
+      allow read: if (isAdmin() && settingId in [
+          'order_delivery', 'organization_options', 'payment_instructions', 'basket_selection', 'support_contact'
+        ])
+        || (isApprovedEmployee() && settingId in [
+          'organization_options', 'payment_instructions', 'basket_selection', 'support_contact'
+        ]);
+      allow create, update: if isAdmin() && settingId == 'order_delivery'
+        && request.resource.data.keys().hasAll([
+          'notificationEmails', 'spreadsheetUrl', 'updatedAt', 'updatedBy'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'notificationEmails', 'spreadsheetUrl', 'updatedAt', 'updatedBy'
+        ])
+        && request.resource.data.notificationEmails is list
+        && request.resource.data.notificationEmails.size() <= 20
+        && request.resource.data.spreadsheetUrl is string
+        && request.resource.data.spreadsheetUrl.size() <= 500
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow create, update: if isAdmin() && settingId == 'organization_options'
+        && request.resource.data.keys().hasAll([
+          'companies', 'branches', 'updatedAt', 'updatedBy'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'companies', 'branches', 'updatedAt', 'updatedBy'
+        ])
+        && request.resource.data.companies is list
+        && request.resource.data.companies.size() > 0
+        && request.resource.data.companies.size() <= 50
+        && request.resource.data.companies[0] is map
+        && request.resource.data.companies[0].keys().hasOnly(['name', 'branches'])
+        && request.resource.data.companies[0].name is string
+        && request.resource.data.companies[0].name.size() > 0
+        && request.resource.data.companies[0].name.size() <= 80
+        && request.resource.data.companies[0].branches is list
+        && request.resource.data.companies[0].branches.size() > 0
+        && request.resource.data.companies[0].branches.size() <= 50
+        && request.resource.data.branches is list
+        && request.resource.data.branches.size() > 0
+        && request.resource.data.branches.size() <= 50
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow create, update: if isAdmin() && settingId == 'payment_instructions'
+        && request.resource.data.keys().hasAll(['instructions', 'updatedAt', 'updatedBy'])
+        && request.resource.data.keys().hasOnly(['instructions', 'updatedAt', 'updatedBy'])
+        && request.resource.data.instructions is string
+        && request.resource.data.instructions.size() <= 1200
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow create, update: if isAdmin() && settingId == 'basket_selection'
+        && request.resource.data.keys().hasAll(['maxTotalPerEmployee', 'updatedAt', 'updatedBy'])
+        && request.resource.data.keys().hasOnly(['maxTotalPerEmployee', 'updatedAt', 'updatedBy'])
+        && request.resource.data.maxTotalPerEmployee is int
+        && request.resource.data.maxTotalPerEmployee >= 1
+        && request.resource.data.maxTotalPerEmployee <= 10
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow create, update: if isAdmin() && settingId == 'support_contact'
+        && request.resource.data.keys().hasAll(['phone', 'updatedAt', 'updatedBy'])
+        && request.resource.data.keys().hasOnly(['phone', 'updatedAt', 'updatedBy'])
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() <= 24
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if false;
+    }
+  }
+}

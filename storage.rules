@@ -1,0 +1,38 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function adminPath() {
+      return /databases/(default)/documents/admin_users/$(request.auth.uid);
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && firestore.exists(adminPath())
+        && firestore.get(adminPath()).data.active == true;
+    }
+
+    function isApprovedEmployee() {
+      let rosterPath =
+        /databases/(default)/documents/employee_roster/$(request.auth.token.email);
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email is string
+        && firestore.exists(rosterPath)
+        && firestore.get(rosterPath).data.active == true;
+    }
+
+    match /product-images/{filePath=**} {
+      allow read: if isAdmin() || isApprovedEmployee();
+      allow create, update: if isAdmin()
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType in [
+          'image/jpeg', 'image/png', 'image/webp'
+        ];
+      allow delete: if isAdmin();
+    }
+  }
+}
