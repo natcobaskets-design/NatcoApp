@@ -94,9 +94,9 @@ npm run lint
 
 ## النشر على GitHub Pages للاختبار
 
-يُنشر التطبيق تلقائياً إلى GitHub Pages عند الدفع إلى فرع `main` عبر سير العمل `.github/workflows/deploy-pages.yml`. أضف القيم التالية في **Settings → Secrets and variables → Actions → Variables** بالمستودع؛ إعداد Firebase للويب سيظهر في ملفات الموقع المنشورة، لذلك لا تضع هنا أي كلمة مرور أو مفتاح خدمة خاص:
+يُنشر التطبيق تلقائياً إلى GitHub Pages عند الدفع إلى فرع `main` عبر سير العمل `.github/workflows/deploy-pages.yml`. أضف القيم التالية في **Settings → Secrets and variables → Actions → Secrets** بالمستودع. يستخدم سير العمل هذه القيم أثناء البناء؛ إعداد Firebase للويب سيظهر في ملفات الموقع المنشورة، لذا لا تضع هنا أي كلمة مرور أو مفتاح خدمة خاص. حماية البيانات تعتمد على قواعد Firestore ونطاقات Firebase المصرح بها، وليس على إخفاء إعدادات تطبيق الويب:
 
-| اسم المتغير | القيمة |
+| اسم السر | القيمة |
 | --- | --- |
 | `VITE_FIREBASE_API_KEY` | مفتاح تطبيق Firebase للويب |
 | `VITE_FIREBASE_AUTH_DOMAIN` | نطاق المصادقة لمشروع Firebase |
