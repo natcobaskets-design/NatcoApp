@@ -659,14 +659,6 @@ function App() {
       if (editingOrderId) {
         const batch = writeBatch(firestore)
         batch.update(orderRef, { ...orderData, updatedAt: serverTimestamp() })
-        batch.set(notificationRef, {
-          orderId: orderRef.id,
-          uid: authUser.uid,
-          status: 'pending',
-          eventStatus: 'received',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }, { merge: true })
         batch.update(employeeRef, ledgerUpdate)
         batch.update(rosterRef, ledgerUpdate)
         await batch.commit()
@@ -678,15 +670,22 @@ function App() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         })
-        batch.set(notificationRef, {
-          orderId: orderRef.id,
-          uid: authUser.uid,
-          status: 'pending',
-          createdAt: serverTimestamp(),
-        })
         batch.update(employeeRef, ledgerUpdate)
         batch.update(rosterRef, ledgerUpdate)
         await batch.commit()
+      }
+      let notificationQueued = true
+      try {
+        await setDoc(notificationRef, {
+          orderId: orderRef.id,
+          uid: authUser.uid,
+          status: 'pending',
+          ...(editingOrderId ? { eventStatus: 'received', updatedAt: serverTimestamp() } : {}),
+          createdAt: serverTimestamp(),
+        }, { merge: true })
+      } catch (error) {
+        notificationQueued = false
+        console.error('The order was saved, but its notification could not be queued.', error)
       }
       let sheetSyncQueued = true
       try {
@@ -713,9 +712,11 @@ function App() {
       setEditingOrderId(null)
       setActiveOrder(order)
       setScreen('receipt')
-      setNotice(sheetSyncQueued
-        ? 'تم تأكيد طلبك. سيظهر للمسؤولين في لوحة الإدارة ويُرسل إشعارهم بعد المزامنة.'
-        : 'تم تأكيد طلبك وحُفظ الإنفاق، لكن تعذرت إضافة تحديث Google Sheets. أبلغ مسؤول النظام لمزامنة السجل.')
+      setNotice(!notificationQueued
+        ? 'تم تأكيد طلبك وحُفظ الإنفاق، لكن تعذر إرسال إشعار الإدارة. سيظل الطلب ظاهرًا في لوحة الإدارة.'
+        : !sheetSyncQueued
+          ? 'تم تأكيد طلبك وحُفظ الإنفاق، لكن تعذرت إضافة تحديث Google Sheets. أبلغ مسؤول النظام لمزامنة السجل.'
+          : 'تم تأكيد طلبك. سيظهر للمسؤولين في لوحة الإدارة ويُرسل إشعارهم بعد المزامنة.')
     } catch (error) {
       console.error('Unable to submit the employee order to Firestore.', error)
       setNotice(orderSubmissionErrorMessage(error))

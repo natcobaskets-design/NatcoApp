@@ -459,15 +459,12 @@ service cloud.firestore {
         && (!request.resource.data.keys().hasAny(['eventStatus'])
           || request.resource.data.eventStatus == 'received')
         && request.resource.data.createdAt == request.time
-        && getAfter(
+        && get(
           /databases/$(database)/documents/orders/$(orderId)
         ).data.uid == request.auth.uid
-        && getAfter(
+        && get(
           /databases/$(database)/documents/orders/$(orderId)
         ).data.status == 'received'
-        && getAfter(
-          /databases/$(database)/documents/orders/$(orderId)
-        ).data.updatedAt == request.time
         && (!request.resource.data.keys().hasAny(['updatedAt'])
           || request.resource.data.updatedAt == request.time);
       allow create: if isAdmin()
@@ -510,15 +507,12 @@ service cloud.firestore {
           && request.resource.data.eventStatus == 'received'
           && request.resource.data.createdAt == request.time
           && request.resource.data.updatedAt == request.time
-          && getAfter(
+          && get(
             /databases/$(database)/documents/orders/$(orderId)
           ).data.uid == request.auth.uid
-          && getAfter(
+          && get(
             /databases/$(database)/documents/orders/$(orderId)
-          ).data.status == 'received'
-          && getAfter(
-            /databases/$(database)/documents/orders/$(orderId)
-          ).data.updatedAt == request.time);
+          ).data.status == 'received');
       allow delete: if false;
     }
 
