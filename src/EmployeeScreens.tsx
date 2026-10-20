@@ -369,6 +369,6 @@ export function ReceiptView({ activeOrder, orders, products, depositInstructions
 
 export function Brand({ compact = false }: { compact?: boolean }) {
   return <div className={`brand${compact ? ' brand-compact' : ''}`} role="img" aria-label="شعار ناتكو الاستهلاكية الرسمي">
-    <img className="brand-logo" src="/natco-logo.jpg" alt="" draggable={false} />
+    <img className="brand-logo" src={`${import.meta.env.BASE_URL}natco-logo.jpg`} alt="" draggable={false} />
   </div>
 }
