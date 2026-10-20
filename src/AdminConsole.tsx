@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import {
   collection, deleteField, doc, getDoc, getDocs, onSnapshot, orderBy, query,
-  serverTimestamp, updateDoc, where, writeBatch,
+  serverTimestamp, where, writeBatch,
 } from 'firebase/firestore'
 import {
-  Archive, Building2, Check, ClipboardList, Download, ImagePlus, LoaderCircle, Mail, Package,
+  Archive, Building2, Check, ClipboardList, Download, Edit3, ImagePlus, LoaderCircle, Mail, Package,
   Plus, Search, Share2, ShieldCheck, Trash2, Upload, Users, X,
 } from 'lucide-react'
 import { AdminIntegrationSettings } from './AdminIntegrationSettings'
@@ -80,11 +80,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
   const previewRef = useRef('')
   const [email, setEmail] = useState('')
   const [employeeCode, setEmployeeCode] = useState('')
-  const [employeeCompany, setEmployeeCompany] = useState('')
-  const [employeeBranch, setEmployeeBranch] = useState('')
-  const [employeeProvince, setEmployeeProvince] = useState('')
-  const [monthlyLimitText, setMonthlyLimitText] = useState('')
-  const [monthlySpentText, setMonthlySpentText] = useState('0')
+  const [editingEmployee, setEditingEmployee] = useState<EmployeeEntry | null>(null)
+  const [employeeEditDraft, setEmployeeEditDraft] = useState({ company: '', monthlySpendingLimit: '', currentMonthlySpent: '0' })
   const [rosterFileName, setRosterFileName] = useState('')
   const [rosterPreview, setRosterPreview] = useState<RosterImportPreview | null>(null)
   const [importedRows, setImportedRows] = useState(0)
@@ -331,45 +328,29 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     event.preventDefault()
     if (!firestore) return
     const normalizedEmail = email.trim().toLowerCase()
-    const monthlyLimit = monthlyLimitText.trim() ? Number(monthlyLimitText) : undefined
-    const monthlySpent = Number(monthlySpentText)
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || !employeeCode.trim() ||
-      !employeeCompany || !employeeBranch || !employeeProvince ||
-      (monthlyLimit !== undefined && (!Number.isFinite(monthlyLimit) || monthlyLimit < 0)) ||
-      !Number.isFinite(monthlySpent) || monthlySpent < 0) {
-      onNotice('أدخل بريداً وكوداً صحيحين، واختر الشركة، وتأكد من صحة مبالغ السقف والإنفاق.')
+      employeeCode.trim().length > 80) {
+      onNotice('أدخل بريداً إلكترونياً صحيحاً وكوداً وظيفياً لا يتجاوز ٨٠ حرفاً.')
       return
     }
     setWorking(true)
     try {
+      const rosterRef = doc(firestore, 'employee_roster', normalizedEmail)
+      if ((await getDoc(rosterRef)).exists()) {
+        onNotice('هذا البريد معتمد مسبقاً. استخدم زر التعديل في سجل الموظف.')
+        return
+      }
       const period = currentSpendingPeriod()
-      const profiles = await getDocs(query(
-        collection(firestore, 'employees'),
-        where('email', '==', normalizedEmail),
-      ))
       const batch = writeBatch(firestore)
-      batch.set(doc(firestore, 'employee_roster', normalizedEmail), {
+      batch.set(rosterRef, {
         email: normalizedEmail,
         employeeCode: employeeCode.trim(),
-        company: employeeCompany,
-        branch: employeeBranch,
-        province: employeeProvince,
-        ...(monthlyLimit !== undefined ? { monthlySpendingLimit: monthlyLimit } : { monthlySpendingLimit: deleteField() }),
-        currentMonthlySpent: monthlySpent,
+        currentMonthlySpent: 0,
         spendingPeriod: period,
         active: true,
         approvedBy: user.uid,
         updatedAt: serverTimestamp(),
-      }, { merge: true })
-      profiles.docs.forEach((snapshot) => batch.set(snapshot.ref, {
-        employeeCode: employeeCode.trim(),
-        company: employeeCompany,
-        branch: employeeBranch,
-        province: employeeProvince,
-        monthlySpendingLimit: monthlyLimit === undefined ? deleteField() : monthlyLimit,
-        currentMonthlySpent: monthlySpent,
-        spendingPeriod: period,
-      }, { merge: true }))
+      })
       batch.set(doc(firestore, 'employee_sync_queue', normalizedEmail), {
         email: normalizedEmail,
         status: 'pending',
@@ -378,11 +359,6 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       await batch.commit()
       setEmail('')
       setEmployeeCode('')
-      setEmployeeCompany('')
-      setEmployeeBranch('')
-      setEmployeeProvince('')
-      setMonthlyLimitText('')
-      setMonthlySpentText('0')
       onNotice('تم اعتماد الموظف. يمكنه الآن إنشاء حسابه بالبريد الإلكتروني المعتمد.')
     } catch (error) {
       console.error('Unable to add employee to the approved roster.', error)
@@ -468,16 +444,17 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           email: row.email,
           employeeCode: row.employeeCode,
           ...(row.name ? { name: row.name } : {}),
-          ...(row.company ? { company: row.company } : {}),
+          ...(row.providedFields.includes('company') ? { company: row.company || deleteField() } : {}),
           ...(row.branch ? { branch: row.branch } : {}),
           ...(row.province ? { province: row.province } : {}),
           ...(row.address ? { address: row.address } : {}),
           ...(row.coordinates ? { coordinates: row.coordinates } : {}),
           ...(row.phone ? { phone: row.phone } : {}),
           ...(row.whatsapp ? { whatsapp: row.whatsapp } : {}),
-          ...(row.monthlySpendingLimit !== undefined ? { monthlySpendingLimit: row.monthlySpendingLimit } : {}),
-          ...(row.currentMonthlySpent !== undefined
-            ? { currentMonthlySpent: row.currentMonthlySpent, spendingPeriod: period } : {}),
+          ...(row.providedFields.includes('monthlySpendingLimit')
+            ? { monthlySpendingLimit: row.monthlySpendingLimit ?? deleteField() } : {}),
+          ...(row.providedFields.includes('currentMonthlySpent')
+            ? { currentMonthlySpent: row.currentMonthlySpent ?? 0, spendingPeriod: period } : {}),
           active: row.active ?? true,
           approvedBy: user.uid,
           updatedAt: serverTimestamp(),
@@ -488,16 +465,17 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           batch.update(snapshot.ref, {
             employeeCode: row.employeeCode,
             ...(row.name ? { name: row.name } : {}),
-            ...(row.company ? { company: row.company } : {}),
+            ...(row.providedFields.includes('company') ? { company: row.company || deleteField() } : {}),
             ...(row.branch ? { branch: row.branch } : {}),
             ...(row.province ? { province: row.province } : {}),
             ...(row.address ? { address: row.address } : {}),
             ...(row.coordinates ? { coordinates: row.coordinates } : {}),
             ...(row.phone ? { phone: row.phone } : {}),
             ...(row.whatsapp ? { whatsapp: row.whatsapp } : {}),
-            ...(row.monthlySpendingLimit !== undefined ? { monthlySpendingLimit: row.monthlySpendingLimit } : {}),
-            ...(row.currentMonthlySpent !== undefined
-              ? { currentMonthlySpent: row.currentMonthlySpent, spendingPeriod: period } : {}),
+            ...(row.providedFields.includes('monthlySpendingLimit')
+              ? { monthlySpendingLimit: row.monthlySpendingLimit ?? deleteField() } : {}),
+            ...(row.providedFields.includes('currentMonthlySpent')
+              ? { currentMonthlySpent: row.currentMonthlySpent ?? 0, spendingPeriod: period } : {}),
           })
         })
         chunk.forEach((row) => batch.set(doc(database, 'employee_sync_queue', row.email), {
@@ -529,8 +507,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     const spent = entry.currentMonthlySpent ?? 0
     if ((limit !== undefined && (!Number.isFinite(limit) || limit < 0)) ||
       !Number.isFinite(spent) || spent < 0 ||
-      !organizationOptions.companies.some((company) => company.name === entry.company)) {
-      onNotice('اختر شركة موجودة وأدخل سقفاً وإنفاقاً رقمياً غير سالب.')
+      (entry.company && !organizationOptions.companies.some((company) => company.name === entry.company))) {
+      onNotice('اختر شركة موجودة أو أزلها، وأدخل سقفاً وإنفاقاً رقمياً غير سالب.')
       return
     }
     setWorking(true)
@@ -540,7 +518,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       const profiles = await getDocs(query(collection(firestore, 'employees'), where('email', '==', entry.email)))
       const batch = writeBatch(firestore)
       batch.set(rosterRef, {
-        company: entry.company,
+        company: entry.company || deleteField(),
         monthlySpendingLimit: limit === undefined ? deleteField() : limit,
         currentMonthlySpent: spent,
         spendingPeriod: period,
@@ -548,7 +526,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         updatedAt: serverTimestamp(),
       }, { merge: true })
       profiles.docs.forEach((snapshot) => batch.update(snapshot.ref, {
-        company: entry.company,
+        company: entry.company || deleteField(),
         monthlySpendingLimit: limit === undefined ? deleteField() : limit,
         currentMonthlySpent: spent,
         spendingPeriod: period,
@@ -559,7 +537,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         updatedAt: serverTimestamp(),
       })
       await batch.commit()
-      onNotice(`تم حفظ الشركة والسقف والإنفاق الشهري للموظف ${entry.email}.`)
+      setEditingEmployee(null)
+      onNotice(`تم حفظ بيانات الموظف ${entry.email}.`)
     } catch (error) {
       console.error(`Unable to update monthly spending settings for ${entry.email}.`, error)
       onNotice(firebaseErrorMessage(error))
@@ -572,11 +551,18 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     if (!firestore) return
     setWorking(true)
     try {
-      await updateDoc(doc(firestore, 'employee_roster', entry.email), {
+      const batch = writeBatch(firestore)
+      batch.update(doc(firestore, 'employee_roster', entry.email), {
         active: !entry.active,
         approvedBy: user.uid,
         updatedAt: serverTimestamp(),
       })
+      batch.set(doc(firestore, 'employee_sync_queue', entry.email), {
+        email: entry.email,
+        status: 'pending',
+        updatedAt: serverTimestamp(),
+      })
+      await batch.commit()
       onNotice(entry.active ? 'تم إيقاف وصول الموظف.' : 'تم تفعيل وصول الموظف.')
     } catch (error) {
       console.error(`Unable to update employee access for ${entry.email}.`, error)
@@ -849,7 +835,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
             <label className="roster-file-button"><Upload size={15} /> اختيار ملف CSV<input type="file" accept=".csv,text/csv" disabled={working} onChange={(event) => { void readRosterFile(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = '' }} /></label>
             {rosterFileName && <span className="roster-file-name" dir="auto">{rosterFileName}</span>}
           </div>
-          <small className="employee-bulk-help">الأعمدة المطلوبة: <b dir="ltr">email, employeeCode</b>. الأعمدة الاختيارية: <b dir="ltr">company, monthlySpendingLimit, currentMonthlySpent</b>. يُقبل CSV القديم كما هو. لا تضف كلمات مرور.</small>
+          <small className="employee-bulk-help">الأعمدة المطلوبة: <b dir="ltr">email, employeeCode</b>. الأعمدة الاختيارية: <b dir="ltr">company, monthlySpendingLimit, currentMonthlySpent</b>. الخانة الفارغة للشركة أو السقف تمسح قيمتها؛ والإنفاق الفارغ يصفره. الأعمدة غير الموجودة لا تغيّر بياناتها. لا تضف كلمات مرور.</small>
           {rosterPreview && <div className="roster-preview">
             <div className="roster-preview-summary"><strong>معاينة {rosterFileName}</strong><span>{rosterPreview.rows.length} سجل صالح</span><span className={rosterPreview.issues.length ? 'roster-invalid-count' : ''}>{rosterPreview.issues.length} مشكلة</span></div>
             {rosterPreview.issues.length > 0 && <div className="roster-import-issues" role="alert">{rosterPreview.issues.slice(0, 6).map((item) => <small key={item}>{item}</small>)}{rosterPreview.issues.length > 6 && <small>و{rosterPreview.issues.length - 6} مشكلات أخرى. صحّح الملف ثم أعد اختياره.</small>}</div>}
@@ -863,29 +849,61 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         <form className="employee-approval-form" onSubmit={(event) => void saveEmployee(event)}>
           <label className="field"><span>بريد الموظف الإلكتروني</span><input required type="email" dir="ltr" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="employee@company.com" /></label>
           <label className="field"><span>الكود الوظيفي</span><input required value={employeeCode} onChange={(event) => setEmployeeCode(event.target.value)} placeholder="مثال: 10482" /></label>
-          <label className="field"><span>الشركة التابعة</span><select required value={employeeCompany} onChange={(event) => { setEmployeeCompany(event.target.value); setEmployeeBranch('') }}><option value="">اختر الشركة</option>{organizationOptions.companies.map((company) => <option key={company.name} value={company.name}>{company.name}</option>)}</select></label>
-          <label className="field"><span>الفرع</span><select required disabled={!employeeCompany} value={employeeBranch} onChange={(event) => setEmployeeBranch(event.target.value)}><option value="">اختر الفرع</option>{organizationOptions.companies.find((company) => company.name === employeeCompany)?.branches.map((branch) => <option key={branch}>{branch}</option>)}</select></label>
-          <label className="field"><span>المحافظة</span><select required value={employeeProvince} onChange={(event) => setEmployeeProvince(event.target.value)}><option value="">اختر المحافظة</option>{organizationOptions.branches.map((branch) => <option key={branch}>{branch}</option>)}</select></label>
-          <label className="field"><span>السقف الشهري (ر.ي) — اختياري</span><input type="number" min="0" step="1" value={monthlyLimitText} onChange={(event) => setMonthlyLimitText(event.target.value)} placeholder="فارغ = بدون سقف محدد" /></label>
-          <label className="field"><span>الإنفاق الحالي (ر.ي)</span><input required type="number" min="0" step="1" value={monthlySpentText} onChange={(event) => setMonthlySpentText(event.target.value)} /></label>
           <button className="admin-add-button" disabled={working}><Plus size={15} /> اعتماد الموظف</button>
         </form>
         <div className="admin-roster-toolbar"><label className="admin-search"><Search size={16} /><input type="search" value={employeeSearch} onChange={(event) => setEmployeeSearch(event.target.value)} placeholder="ابحث بالبريد الإلكتروني أو الكود الوظيفي..." aria-label="البحث عن الموظفين المعتمدين" /></label><div className="admin-data-actions"><span>{filteredEmployees.length} من {employees.length} موظف</span><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(true)}><Share2 size={14} /> مشاركة</button></div></div>
-        <div className="roster-list">{filteredEmployees.length ? filteredEmployees.map((entry) => <div className="roster-row roster-row-financial" key={entry.email}>
+        <div className="roster-list">{filteredEmployees.length ? filteredEmployees.map((entry) => <div className="roster-row roster-row-compact" key={entry.email}>
           <span className={`roster-state${entry.active ? ' active' : ''}`}><Check size={13} /></span>
-          <div className="roster-financial-fields">
+          <div className="roster-identity">
             <strong dir="ltr">{entry.email}</strong><small>الكود الوظيفي: {entry.employeeCode}</small>
-            <label>الشركة<select value={entry.company ?? ''} onChange={(event) => setEmployees((current) => current.map((item) => item.email === entry.email ? { ...item, company: event.target.value } : item))}><option value="">اختر</option>{organizationOptions.companies.map((company) => <option key={company.name} value={company.name}>{company.name}</option>)}</select></label>
-            <label>السقف الشهري<input type="number" min="0" step="1" value={entry.monthlySpendingLimit ?? ''} placeholder="بدون سقف" onChange={(event) => setEmployees((current) => current.map((item) => item.email === entry.email ? { ...item, monthlySpendingLimit: event.target.value ? Number(event.target.value) : undefined } : item))} /></label>
-            <label>الإنفاق الحالي<input type="number" min="0" step="1" value={entry.currentMonthlySpent ?? 0} onChange={(event) => setEmployees((current) => current.map((item) => item.email === entry.email ? { ...item, currentMonthlySpent: Number(event.target.value) } : item))} /></label>
-            <small>الشهر: {entry.spendingPeriod ?? 'غير محدد'} — يُحدّث تلقائياً مع الطلبات ويمكن تصحيحه أو تصفيره هنا.</small>
           </div>
-          <div className="roster-row-actions"><button type="button" disabled={working} onClick={() => void saveEmployeeSpending(entry)}>حفظ الشركة والسقف</button><button type="button" disabled={working} onClick={() => {
-            if (window.confirm(`تصفير إنفاق ${entry.email} للشهر الحالي؟`)) {
-              void saveEmployeeSpending({ ...entry, currentMonthlySpent: 0 })
-            }
-          }}>تصفير إنفاق الشهر</button><button type="button" disabled={working} className={entry.active ? 'deactivate-button' : 'activate-button'} onClick={() => void toggleEmployee(entry)}>{entry.active ? 'إيقاف' : 'تفعيل'}</button></div>
+          <div className="roster-row-actions">
+            <button type="button" disabled={working} onClick={() => {
+              setEditingEmployee(entry)
+              setEmployeeEditDraft({
+                company: entry.company ?? '',
+                monthlySpendingLimit: entry.monthlySpendingLimit === undefined ? '' : String(entry.monthlySpendingLimit),
+                currentMonthlySpent: String(
+                  entry.spendingPeriod === currentSpendingPeriod() ? entry.currentMonthlySpent ?? 0 : 0,
+                ),
+              })
+            }}><Edit3 size={14} /> تعديل</button>
+            <button type="button" disabled={working} className={entry.active ? 'deactivate-button' : 'activate-button'} onClick={() => void toggleEmployee(entry)}>{entry.active ? 'إيقاف' : 'تفعيل'}</button>
+          </div>
         </div>) : <div className="admin-empty"><Search size={26} /><strong>{employees.length ? 'لا توجد نتائج مطابقة' : 'لا يوجد موظفون معتمدون بعد'}</strong></div>}</div>
+        {editingEmployee && <div className="admin-modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !working) setEditingEmployee(null)
+        }}>
+          <form className="admin-employee-form" onSubmit={(event) => {
+            event.preventDefault()
+            const limitText = employeeEditDraft.monthlySpendingLimit.trim()
+            const spentText = employeeEditDraft.currentMonthlySpent.trim()
+            const limit = limitText ? Number(limitText) : undefined
+            const spent = Number(spentText)
+            if ((limit !== undefined && (!Number.isFinite(limit) || limit < 0 || limit > 1_000_000_000)) ||
+              !Number.isFinite(spent) || spent < 0 || spent > 1_000_000_000) {
+              onNotice('يجب أن يكون السقف والإنفاق أرقاماً غير سالبة ضمن الحد المسموح.')
+              return
+            }
+            void saveEmployeeSpending({
+              ...editingEmployee,
+              company: employeeEditDraft.company,
+              monthlySpendingLimit: limit,
+              currentMonthlySpent: spent,
+            })
+          }}>
+            <div className="admin-form-heading"><div><h3>تعديل بيانات الموظف</h3><p dir="ltr">{editingEmployee.email}</p></div>
+              <button type="button" className="admin-close-button" aria-label="إغلاق" onClick={() => setEditingEmployee(null)}><X size={17} /></button>
+            </div>
+            <label className="field"><span>الشركة</span><select value={employeeEditDraft.company} onChange={(event) => setEmployeeEditDraft((current) => ({ ...current, company: event.target.value }))}>
+              <option value="">بدون شركة</option>{organizationOptions.companies.map((company) => <option key={company.name} value={company.name}>{company.name}</option>)}
+            </select></label>
+            <label className="field"><span>السقف الشهري (ر.ي) — فارغ لإزالته</span><input type="number" min="0" max="1000000000" step="1" value={employeeEditDraft.monthlySpendingLimit} onChange={(event) => setEmployeeEditDraft((current) => ({ ...current, monthlySpendingLimit: event.target.value }))} /></label>
+            <label className="field"><span>الإنفاق الحالي للشهر (ر.ي)</span><input required type="number" min="0" max="1000000000" step="1" value={employeeEditDraft.currentMonthlySpent} onChange={(event) => setEmployeeEditDraft((current) => ({ ...current, currentMonthlySpent: event.target.value }))} /></label>
+            <p className="admin-employee-period">فترة الإنفاق: {currentSpendingPeriod()}. إن كانت بيانات الموظف من شهر سابق فسيبدأ إنفاقه الحالي من صفر.</p>
+            <div className="admin-form-actions"><button className="admin-add-button" disabled={working}><Check size={14} /> حفظ التعديلات</button><button type="button" className="admin-export-button" disabled={working} onClick={() => setEditingEmployee(null)}>إلغاء</button></div>
+          </form>
+        </div>}
       </section>}
 
       {!loading && tab === 'settings' && <AdminIntegrationSettings user={user} onNotice={onNotice} />}

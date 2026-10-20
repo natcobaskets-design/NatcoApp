@@ -12,6 +12,7 @@ const PRODUCT_SHEET_NAME = 'كتالوج المنتجات';
 const EMPLOYEE_HEADERS = [
   'اسم الموظف', 'البريد الإلكتروني', 'الرقم الوظيفي', 'الشركة/الشركة التابعة',
   'الفرع', 'المحافظة', 'السقف الشهري المعتمد', 'الإنفاق الشهري الحالي', 'حالة الحساب',
+  'فترة الإنفاق', 'بصمة المزامنة',
 ];
 const PRODUCT_HEADERS = [
   'معرّف المنتج', 'اسم المنتج', 'الوصف', 'القسم الرئيسي', 'التصنيف الفرعي',
@@ -73,7 +74,8 @@ function initializeNatcoIntegration() {
   ensureCatalogSheet_(spreadsheet);
   ensureQueueTrigger_();
   ensureEmployeeEditTrigger_(spreadsheetId);
-  syncAllNatcoEmployees();
+  syncAllNatcoEmployees(true);
+  initializeEmployeeSpendingPeriod_();
   syncAllNatcoProducts();
   syncDeletedNatcoOrdersNow();
 
@@ -136,8 +138,11 @@ function processNatcoOrderQueue() {
         }
       });
     });
+    syncEmployeesFromSheet_(spreadsheetId);
     processEmployeeSyncQueue_(spreadsheetId);
     processCatalogSyncQueue_(spreadsheetId);
+    rolloverEmployeeSpending_(spreadsheetId);
+    syncEmployeesFromSheet_(spreadsheetId);
   } finally {
     lock.releaseLock();
   }
@@ -430,7 +435,7 @@ function findCatalogProductRow_(sheet, productId) {
   return match ? match.getRow() : 0;
 }
 
-function syncAllNatcoEmployees() {
+function syncAllNatcoEmployees(preserveExistingRows) {
   const settings = getSettingsDocument_();
   const spreadsheetId = settings && spreadsheetIdFromUrl_(settings.spreadsheetUrl);
   if (!spreadsheetId) throw new Error('احفظ رابط Google Sheets من لوحة المشرف قبل مزامنة الموظفين.');
@@ -447,13 +452,13 @@ function syncAllNatcoEmployees() {
     if (entry.error) throw new Error('Employee roster query failed: ' + JSON.stringify(entry.error).slice(0, 300));
     if (!entry.document) return;
     const email = entry.document.name.split('/').pop();
-    syncEmployeeRow_(email, spreadsheetId, sheet);
+    syncEmployeeRow_(email, spreadsheetId, sheet, preserveExistingRows);
     count += 1;
   });
   console.log('تمت مزامنة ' + count + ' سجلاً في تبويب "' + EMPLOYEE_SHEET_NAME + '".');
 }
 
-function syncEmployeeRow_(email, spreadsheetId, existingSheet) {
+function syncEmployeeRow_(email, spreadsheetId, existingSheet, preserveExistingRow) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) return;
   const roster = getDocument_(EMPLOYEE_ROSTER_COLLECTION, normalizedEmail);
@@ -471,8 +476,11 @@ function syncEmployeeRow_(email, spreadsheetId, existingSheet) {
     typeof roster.monthlySpendingLimit === 'number' ? roster.monthlySpendingLimit : '',
     typeof roster.currentMonthlySpent === 'number' ? roster.currentMonthlySpent : 0,
     roster.active === true ? 'نشط' : 'موقوف',
+    roster.spendingPeriod || '',
   ].map(safeSheetValue_);
+  values.push(employeeRowFingerprint_(values));
   const row = findEmployeeRow_(sheet, normalizedEmail);
+  if (row && preserveExistingRow) return;
   if (row) sheet.getRange(row, 1, 1, EMPLOYEE_HEADERS.length).setValues([values]);
   else sheet.appendRow(values);
   const targetRow = row || sheet.getLastRow();
@@ -530,9 +538,9 @@ function importEmployeeSheetRow_(sheet, rowNumber) {
   const statusText = String(values[8] || '').trim().toLowerCase();
   const active = ['نشط', 'active', 'true', '1', 'معتمد'].indexOf(statusText) >= 0;
   const inactive = ['موقوف', 'inactive', 'false', '0', 'غير نشط'].indexOf(statusText) >= 0;
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !employeeCode || !company || !branch ||
-    !province || (!active && !inactive)) {
-    throw new Error('أكمل البريد والرقم الوظيفي والشركة والفرع والمحافظة وحالة الحساب.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !employeeCode || employeeCode.length > 80 ||
+    (!active && !inactive)) {
+    throw new Error('أكمل البريد والكود الوظيفي وحالة الحساب بشكل صحيح.');
   }
   const limit = limitValue === '' || limitValue === null ? null : Number(limitValue);
   const spent = spentValue === '' || spentValue === null ? 0 : Number(spentValue);
@@ -540,23 +548,31 @@ function importEmployeeSheetRow_(sheet, rowNumber) {
     !Number.isFinite(spent) || spent < 0 || spent > 1000000000) {
     throw new Error('السقف والإنفاق يجب أن يكونا أرقاماً غير سالبة ضمن الحد المسموح.');
   }
+  const period = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM');
   const fields = {
     employeeCode: employeeCode.slice(0, 80),
-    company: company.slice(0, 80),
-    branch: branch.slice(0, 80),
-    province: province.slice(0, 80),
-    name: employeeName.slice(0, 120),
     currentMonthlySpent: spent,
-    spendingPeriod: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM'),
+    spendingPeriod: period,
     active: active,
     updatedAt: new Date(),
   };
+  const deletedFields = [];
+  [
+    ['name', employeeName, 120],
+    ['company', company, 80],
+    ['branch', branch, 80],
+    ['province', province, 80],
+  ].forEach(function (field) {
+    if (field[1]) fields[field[0]] = field[1].slice(0, field[2]);
+    else deletedFields.push(field[0]);
+  });
   if (limit !== null) fields.monthlySpendingLimit = limit;
+  else deletedFields.push('monthlySpendingLimit');
   const rosterFields = Object.assign({}, fields);
+  const rosterMask = Object.keys(rosterFields).concat(deletedFields);
   const existingRoster = getDocument_(EMPLOYEE_ROSTER_COLLECTION, email);
   if (existingRoster) {
-    patchDocumentFields_(EMPLOYEE_ROSTER_COLLECTION, email, rosterFields,
-      Object.keys(rosterFields).concat(limit === null ? ['monthlySpendingLimit'] : []));
+    patchDocumentFields_(EMPLOYEE_ROSTER_COLLECTION, email, rosterFields, rosterMask);
   } else {
     writeDocument_(EMPLOYEE_ROSTER_COLLECTION, email, rosterFields, false);
   }
@@ -566,9 +582,88 @@ function importEmployeeSheetRow_(sheet, rowNumber) {
     const profileFields = Object.assign({}, fields);
     if (limit !== null) profileFields.monthlySpendingLimit = limit;
     patchDocumentFields_(EMPLOYEE_COLLECTION, profileId, profileFields,
-      Object.keys(profileFields).concat(limit === null ? ['monthlySpendingLimit'] : []));
+      Object.keys(profileFields).concat(deletedFields));
   });
   syncEmployeeRow_(email, '', sheet);
+}
+
+function syncEmployeesFromSheet_(spreadsheetId) {
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  const sheet = ensureEmployeeSheet_(spreadsheet);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const rows = sheet.getRange(2, 1, lastRow - 1, EMPLOYEE_HEADERS.length).getValues();
+  let synced = 0;
+  let failures = 0;
+  let processed = 0;
+  for (let index = 0; index < rows.length && processed < 100; index += 1) {
+    const row = rows[index];
+    if (!row[1] || !row[2] || employeeRowFingerprint_(row) === String(row[10] || '')) continue;
+    const rowNumber = index + 2;
+    processed += 1;
+    try {
+      importEmployeeSheetRow_(sheet, rowNumber);
+      synced += 1;
+    } catch (error) {
+      failures += 1;
+      sheet.getRange(rowNumber, 1, 1, EMPLOYEE_HEADERS.length).setBackground('#fce4e4');
+      console.error('Unable to synchronize employee row ' + rowNumber + '.', error);
+    }
+  }
+  if (synced) console.log('تمت مزامنة ' + synced + ' تغييرات موظفين من Google Sheets.');
+  if (failures) throw new Error('تعذرت مزامنة ' + failures + ' صفوف موظفين. راجع الصفوف الملوّنة بالأحمر.');
+}
+
+function employeeRowFingerprint_(values) {
+  const data = JSON.stringify(values.slice(0, 10).map(function (value) {
+    return value instanceof Date ? value.toISOString() : value;
+  }));
+  return Utilities.base64EncodeWebSafe(
+    Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, data),
+  ).replace(/=+$/, '');
+}
+
+function currentEmployeeSpendingPeriod_() {
+  return Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM');
+}
+
+function initializeEmployeeSpendingPeriod_() {
+  const properties = PropertiesService.getScriptProperties();
+  if (!properties.getProperty('EMPLOYEE_SPENDING_PERIOD')) {
+    properties.setProperty('EMPLOYEE_SPENDING_PERIOD', currentEmployeeSpendingPeriod_());
+  }
+}
+
+function rolloverEmployeeSpending_(spreadsheetId) {
+  const properties = PropertiesService.getScriptProperties();
+  const currentPeriod = currentEmployeeSpendingPeriod_();
+  const previousPeriod = properties.getProperty('EMPLOYEE_SPENDING_PERIOD');
+  if (!previousPeriod) {
+    properties.setProperty('EMPLOYEE_SPENDING_PERIOD', currentPeriod);
+    return;
+  }
+  if (previousPeriod === currentPeriod) return;
+
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  const sheet = ensureEmployeeSheet_(spreadsheet);
+  const archiveName = 'أرشيف الموظفين ' + previousPeriod;
+  if (!spreadsheet.getSheetByName(archiveName)) {
+    sheet.copyTo(spreadsheet).setName(archiveName).hideColumns(EMPLOYEE_HEADERS.length);
+  }
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    const range = sheet.getRange(2, 1, lastRow - 1, EMPLOYEE_HEADERS.length);
+    const rows = range.getValues();
+    rows.forEach(function (row) {
+      if (!row[1]) return;
+      row[7] = 0;
+      row[9] = currentPeriod;
+      row[10] = '';
+    });
+    range.setValues(rows);
+  }
+  properties.setProperty('EMPLOYEE_SPENDING_PERIOD', currentPeriod);
+  console.log('أُنشئ ' + archiveName + ' وصُفّر إنفاق الموظفين للفترة ' + currentPeriod + '.');
 }
 
 function findEmployeeDocuments_(email) {
@@ -774,13 +869,20 @@ function ensureEmployeeHeaders_(sheet) {
       .setFontColor('#ffffff')
       .setFontWeight('bold');
     sheet.autoResizeColumns(1, EMPLOYEE_HEADERS.length);
+    sheet.hideColumns(EMPLOYEE_HEADERS.length);
     return;
   }
-  const headers = sheet.getRange(1, 1, 1, EMPLOYEE_HEADERS.length).getDisplayValues()[0];
-  if (!EMPLOYEE_HEADERS.every(function (header, index) { return headers[index] === header; })) {
+  const legacyHeaders = sheet.getRange(1, 1, 1, 9).getDisplayValues()[0];
+  if (!EMPLOYEE_HEADERS.slice(0, 9).every(function (header, index) { return legacyHeaders[index] === header; })) {
     throw new Error('عناوين تبويب سجل الموظفين غير مطابقة للقالب. لا تغيّر صف العناوين.');
   }
+  const trailingHeaders = sheet.getRange(1, 10, 1, 2).getDisplayValues()[0];
+  if (trailingHeaders[0] && trailingHeaders[0] !== EMPLOYEE_HEADERS[9]) {
+    throw new Error('أعمدة المزامنة الجديدة غير متاحة. لا تضع بيانات بعد عمود حالة الحساب.');
+  }
+  sheet.getRange(1, 10, 1, 2).setValues([EMPLOYEE_HEADERS.slice(9)]);
   sheet.setFrozenRows(1);
+  sheet.hideColumns(EMPLOYEE_HEADERS.length);
 }
 
 function findEmployeeRow_(sheet, email) {

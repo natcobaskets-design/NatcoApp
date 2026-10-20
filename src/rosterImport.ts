@@ -12,6 +12,7 @@ export type RosterImportRow = {
   monthlySpendingLimit?: number
   currentMonthlySpent?: number
   active?: boolean
+  providedFields: string[]
   line: number
 }
 export type RosterImportPreview = { rows: RosterImportRow[]; issues: string[]; totalRows: number }
@@ -129,6 +130,11 @@ export function parseRosterCsv(content: string): RosterImportPreview {
       ...(monthlySpendingLimit !== undefined ? { monthlySpendingLimit } : {}),
       ...(currentMonthlySpent !== undefined ? { currentMonthlySpent } : {}),
       ...(active !== undefined ? { active } : {}),
+      providedFields: [
+        ...(companyIndex >= 0 ? ['company'] : []),
+        ...(limitIndex >= 0 ? ['monthlySpendingLimit'] : []),
+        ...(spentIndex >= 0 ? ['currentMonthlySpent'] : []),
+      ],
       line,
     })
   })

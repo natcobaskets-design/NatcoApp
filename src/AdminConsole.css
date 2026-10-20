@@ -180,6 +180,11 @@
 .roster-row > button { min-height: 26px; padding: 0 8px; border: 1px solid #e8eaf0; border-radius: 5px; background: white; color: #9e6255; font-size: 8px; }
 .roster-row > button.activate-button { color: #26875a; }
 .roster-row-financial { display: grid; grid-template-columns: 28px minmax(0,1fr); align-items: start; gap: 10px; padding: 13px 0; }
+.roster-row-compact { display: grid; grid-template-columns: 25px minmax(0,1fr) auto; gap: 10px; padding: 9px 0; }
+.roster-identity { min-width: 0; display: grid; gap: 4px; }
+.roster-identity strong { font: 600 12px Arial,sans-serif; }
+.roster-identity small { font-size: 10px; }
+.roster-row-compact .roster-row-actions { grid-column: auto; }
 .roster-row-financial > .roster-state { margin-top: 4px; }
 .roster-financial-fields { min-width: 0; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); align-items: end; gap: 9px; }
 .roster-financial-fields > strong,.roster-financial-fields > small { grid-column: 1/-1; min-width: 0; }
@@ -195,6 +200,12 @@
 .roster-row-actions button.deactivate-button { color: #a6534c; border-color: #efd6d3; background: #fff8f7; }
 .admin-modal-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 15px; background: #101b3d80; }
 .admin-product-form { width: min(100%,440px); max-height: min(92vh,720px); overflow-y: auto; display: grid; gap: 12px; padding: 18px; border-radius: 12px; background: #fff; box-shadow: 0 18px 55px #111c3d35; }
+.admin-employee-form { width: min(100%,440px); max-height: min(92vh,720px); overflow-y: auto; display: grid; gap: 12px; padding: 18px; border-radius: 12px; background: #fff; box-shadow: 0 18px 55px #111c3d35; }
+.admin-employee-form .field { display: grid; gap: 6px; color: #59647b; font-size: 11px; }
+.admin-employee-form input,.admin-employee-form select { width: 100%; min-width: 0; height: 38px; padding: 5px 9px; border: 1px solid #dfe3eb; border-radius: 6px; background: #fff; color: #35415b; font: inherit; }
+.admin-employee-period { margin: 0; color: #8a92a3; font-size: 10px; }
+.admin-employee-form .admin-form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-employee-form .admin-form-actions > button { min-height: 36px; }
 .admin-form-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2px; }
 .admin-form-heading h3 { margin: 0; color: #28334d; font-size: 14px; }
 .admin-form-heading p { margin: 5px 0 0; color: #8f96a6; font-size: 8px; }
@@ -332,6 +343,9 @@
   .admin-order-actions select { min-height: 38px; font-size: 11px; }
   .admin-delete-order { min-height: 38px; font-size: 11px; }
   .roster-row-financial { grid-template-columns: 26px minmax(0,1fr); gap: 8px; padding: 14px 0; }
+  .roster-row-compact { grid-template-columns: 24px minmax(0,1fr) auto; gap: 7px; }
+  .roster-identity strong { font-size: 12px; }
+  .roster-identity small { font-size: 10px; }
   .roster-financial-fields { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
   .roster-financial-fields > strong { font-size: 13px; }
   .roster-financial-fields > small { font-size: 11px; }
@@ -372,6 +386,9 @@
   .roster-preview-summary,.roster-preview-list > div { font-size: 10px; }
   .roster-import-issues small { font-size: 10px; }
   .roster-row-financial { grid-template-columns: 22px minmax(0,1fr); gap: 7px; }
+  .roster-row-compact { grid-template-columns: 22px minmax(0,1fr); }
+  .roster-row-compact .roster-row-actions { grid-column: 2; }
+  .roster-row-compact .roster-row-actions button { min-height: 36px; }
   .roster-financial-fields { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
   .roster-financial-fields > strong,.roster-financial-fields > small { grid-column: 1/-1; }
   .roster-financial-fields > label { grid-template-columns: minmax(0,1fr); align-items: stretch; }
