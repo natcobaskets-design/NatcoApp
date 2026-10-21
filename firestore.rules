@@ -320,9 +320,6 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/employees/$(request.auth.uid))
         && get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.email
           == request.auth.token.email
-        && get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.get(
-          'employeeCode', get(rosterPath()).data.employeeCode)
-          == request.resource.data.employeeCode
         && request.resource.data.profile.company == get(rosterPath()).data.get('company', '')
         && request.resource.data.profile.get('monthlySpendingLimit', -1)
           == get(rosterPath()).data.get('monthlySpendingLimit', -1)
