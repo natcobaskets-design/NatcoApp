@@ -637,11 +637,21 @@ service cloud.firestore {
 
     match /employee_sync_queue/{email} {
       allow get, list: if isAdmin();
-      allow create, update: if isAdmin()
+      allow create: if isAdmin()
         || (signedIn()
           && isApprovedEmployee()
           && employeeEmail() == email
           && request.resource.data.keys().hasOnly(['email', 'status', 'updatedAt'])
+          && request.resource.data.email == employeeEmail()
+          && request.resource.data.status == 'pending'
+          && request.resource.data.updatedAt == request.time);
+      allow update: if isAdmin()
+        || (signedIn()
+          && isApprovedEmployee()
+          && employeeEmail() == email
+          && request.resource.data.keys().hasAll(['email', 'status', 'updatedAt'])
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['email', 'status', 'updatedAt'])
           && request.resource.data.email == employeeEmail()
           && request.resource.data.status == 'pending'
           && request.resource.data.updatedAt == request.time);
