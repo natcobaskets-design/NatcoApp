@@ -1,5 +1,5 @@
-import { FirebaseError, initializeApp, getApps } from 'firebase/app'
-import { getAuth } from 'firebase/auth'
+import { deleteApp, FirebaseError, initializeApp, getApps } from 'firebase/app'
+import { createUserWithEmailAndPassword, getAuth, initializeAuth, inMemoryPersistence } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 
 const config = {
@@ -23,6 +23,20 @@ const firebaseApp = firebaseConfigured
 export const firebaseAuth = firebaseApp ? getAuth(firebaseApp) : null
 export const firestore = firebaseApp ? getFirestore(firebaseApp) : null
 
+export async function createEmployeeLoginAccount(email: string, password: string): Promise<void> {
+  if (!firebaseConfigured) throw new Error('Firebase is not configured.')
+  const provisioningApp = initializeApp(
+    config,
+    `employee-provisioning-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  )
+  try {
+    const provisioningAuth = initializeAuth(provisioningApp, { persistence: inMemoryPersistence })
+    await createUserWithEmailAndPassword(provisioningAuth, email, password)
+  } finally {
+    await deleteApp(provisioningApp)
+  }
+}
+
 export function firebaseErrorMessage(error: unknown): string {
   if (!(error instanceof FirebaseError)) {
     return 'تعذر إكمال العملية. تحقق من الاتصال وحاول مجدداً.'
@@ -31,7 +45,7 @@ export function firebaseErrorMessage(error: unknown): string {
     'auth/invalid-credential': 'رقم الهاتف أو كلمة المرور غير صحيحة، أو لم يُجهّز الحساب بعد.',
     'auth/user-not-found': 'تعذر التحقق من بيانات الدخول. راجع المشرف.',
     'auth/wrong-password': 'رقم الهاتف أو كلمة المرور غير صحيحة.',
-    'auth/email-already-in-use': 'تعذر إنشاء حساب الدخول. راجع مسؤول النظام.',
+    'auth/email-already-in-use': 'حساب الدخول موجود مسبقاً. استخدم خيار ربط الحساب الموجود أو أعد ضبط كلمة مروره بأداة المشرف.',
     'auth/weak-password': 'اختر كلمة مرور من ٨ أحرف على الأقل.',
     'auth/invalid-email': 'أدخل بريداً إلكترونياً صحيحاً.',
     'auth/invalid-phone-number': 'أدخل رقم الهاتف بالصيغة الدولية مع رمز الدولة، مثل +9677XXXXXXXX.',

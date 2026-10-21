@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import { collection, deleteDoc, deleteField, doc, getDoc, getDocs, onSnapshot, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
-import { Ban, Check, Edit3, Phone, Search, Save, Trash2, Users, X } from 'lucide-react'
+import { Ban, Check, Edit3, KeyRound, Phone, Search, Save, Trash2, Users, X } from 'lucide-react'
 import { formatYER, type EmployeeProfile, type OrganizationOptions } from './domain'
-import { firebaseErrorMessage, firebaseProjectId, firestore } from './firebase'
+import { createEmployeeLoginAccount, firebaseErrorMessage, firebaseProjectId, firestore } from './firebase'
 import { normalizePhone, toE164PhoneNumber } from './rosterImport'
 import { employeePasswordLoginEmail } from './employeeLogin'
 
@@ -65,6 +65,8 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
   const [selectedEmail, setSelectedEmail] = useState('')
   const [draft, setDraft] = useState<EmployeeRecord>(blankRecord)
   const [passwordLoginEmails, setPasswordLoginEmails] = useState<Set<string>>(new Set())
+  const [employeePassword, setEmployeePassword] = useState('')
+  const [employeePasswordConfirmation, setEmployeePasswordConfirmation] = useState('')
   const [working, setWorking] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
 
@@ -99,6 +101,8 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
 
   function chooseEmployee(record: EmployeeRecord) {
     setSelectedEmail(record.email)
+    setEmployeePassword('')
+    setEmployeePasswordConfirmation('')
     setDraft({
       ...record,
       currentMonthlySpent: record.spendingPeriod === currentPeriod ? record.currentMonthlySpent : 0,
@@ -123,6 +127,12 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         onNotice(firebaseErrorMessage(error))
       }
     })()
+  }
+
+  function closeEditor() {
+    setEditorOpen(false)
+    setEmployeePassword('')
+    setEmployeePasswordConfirmation('')
   }
 
   async function saveEmployee(event: FormEvent<HTMLFormElement>) {
@@ -217,7 +227,7 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
       })
       await batch.commit()
       setDraft((current) => ({ ...current, spendingPeriod: period }))
-      setEditorOpen(false)
+      closeEditor()
       onNotice(`تم حفظ بيانات ${draft.name.trim()} ورقم الهاتف المعتمد لتسجيل الدخول.`)
     } catch (error) {
       console.error(`Unable to save employee profile ${selectedEmail}.`, error)
@@ -256,10 +266,59 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         updatedAt: serverTimestamp(),
       })
       setPasswordLoginEmails((current) => new Set(current).add(selectedEmail))
-      onNotice('تم ربط سجل الموظف بعنوان الدخول. يجب إنشاء حساب Email/Password بهذا العنوان في Firebase Authentication أولاً وتسليم كلمة المرور للموظف.')
+      onNotice('تم ربط حساب الدخول الموجود بسجل الموظف. هذا الإجراء لا ينشئ حساباً ولا يغيّر كلمة المرور.')
     } catch (error) {
       console.error(`Unable to enable password login for employee ${selectedEmail}.`, error)
       onNotice(firebaseErrorMessage(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  async function createPasswordLogin() {
+    if (!firestore || !selectedEmail) return
+    if (employeePassword.length < 8 || employeePassword.length > 256) {
+      onNotice('يجب أن تكون كلمة المرور بين ٨ و٢٥٦ حرفاً.')
+      return
+    }
+    if (employeePassword !== employeePasswordConfirmation) {
+      onNotice('كلمتا المرور غير متطابقتين.')
+      return
+    }
+    const savedRecord = records.find((record) => record.email === selectedEmail)
+    const phoneNumber = savedRecord?.phoneE164 || toE164PhoneNumber(savedRecord?.phone ?? '')
+    const authEmail = employeePasswordLoginEmail(phoneNumber, firebaseProjectId)
+    if (!savedRecord?.active || !authEmail || phoneNumber !== (draft.phoneE164 || toE164PhoneNumber(draft.phone))) {
+      onNotice('احفظ الموظف ورقم هاتفه الدولي أولاً، وتأكد من أن سجل الموظف نشط.')
+      return
+    }
+
+    setWorking(true)
+    let accountCreated = false
+    try {
+      const existingLink = await getDoc(doc(firestore, 'employee_auth_lookup', authEmail))
+      if (existingLink.exists() && existingLink.data().email !== selectedEmail) {
+        onNotice('عنوان الدخول مرتبط بسجل موظف آخر. راجع مسؤول النظام قبل المتابعة.')
+        return
+      }
+      await createEmployeeLoginAccount(authEmail, employeePassword)
+      accountCreated = true
+      await setDoc(doc(firestore, 'employee_auth_lookup', authEmail), {
+        authEmail,
+        email: selectedEmail,
+        phoneNumber,
+        phoneDigits: phoneNumber.replace(/\D/g, ''),
+        updatedAt: serverTimestamp(),
+      })
+      setPasswordLoginEmails((current) => new Set(current).add(selectedEmail))
+      setEmployeePassword('')
+      setEmployeePasswordConfirmation('')
+      onNotice(`تم إنشاء حساب الدخول للموظف ${draft.name || selectedEmail}. سلّمه كلمة المرور الآن؛ لن تُحفظ أو تُعرض مرة أخرى.`)
+    } catch (error) {
+      console.error(`Unable to create password login for employee ${selectedEmail}.`, error)
+      onNotice(accountCreated
+        ? `أُنشئ حساب الدخول لكن تعذر ربطه بسجل الموظف. استخدم «ربط حساب موجود» لإكمال الربط. ${firebaseErrorMessage(error)}`
+        : firebaseErrorMessage(error))
     } finally {
       setWorking(false)
     }
@@ -318,7 +377,7 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         updatedAt: serverTimestamp(),
       })
       await batch.commit()
-      setEditorOpen(false)
+      closeEditor()
       onNotice(active ? 'تم تفعيل حساب الموظف.' : 'تم إيقاف حساب الموظف.')
     } catch (error) {
       console.error(`Unable to ${active ? 'activate' : 'deactivate'} employee ${selectedEmail}.`, error)
@@ -350,7 +409,7 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         updatedAt: serverTimestamp(),
       })
       await batch.commit()
-      setEditorOpen(false)
+      closeEditor()
       setSelectedEmail('')
       onNotice('تم حذف سجل الموظف وملفه الوظيفي. قد يبقى حساب تسجيل الدخول غير نشط في Firebase Auth.')
     } catch (error) {
@@ -380,12 +439,12 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
     <div className="admin-panel-heading"><div><h3>سجل الموظفين وتعديل بياناتهم</h3><p>تُدار بيانات الموظفين وأرقام الهواتف وحالة دخول كلمة المرور.</p></div><div><span>{records.length} موظف</span></div></div>
     <label className="admin-search"><Search size={16} /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث بالبريد أو الاسم أو الرقم الوظيفي أو الهاتف" /></label>
     <div className="employee-profile-results">{filtered.map((record) => <article className="employee-profile-row" key={record.email}>
-      <div><strong>{record.name || 'اسم غير متوفر'}</strong><span>الكود الوظيفي: {record.employeeCode || 'غير محدد'} · {record.phone || 'لا يوجد هاتف'}</span><small dir="ltr">{record.email}</small></div>
+      <div><strong>{record.name || 'اسم غير متوفر'}</strong><span>الكود الوظيفي: {record.employeeCode || 'غير محدد'} · {record.phone || 'لا يوجد هاتف'}</span><small dir="ltr">{record.email}</small><small className={passwordLoginEmails.has(record.email) ? 'employee-login-status-ready' : 'employee-login-status-pending'}>{passwordLoginEmails.has(record.email) ? 'ربط الدخول موجود في Firestore' : 'لم يُنشأ ربط الدخول بعد'}</small></div>
       <button type="button" className="employee-profile-open" onClick={() => chooseEmployee(record)}><Edit3 size={15} /> تعديل الموظف</button>
     </article>)}{!filtered.length && <div className="admin-empty"><Users size={26} /><strong>لا توجد سجلات مطابقة</strong></div>}</div>
-    {editorOpen && selectedEmail && <div className="admin-modal-backdrop employee-editor-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !working) setEditorOpen(false) }}>
+    {editorOpen && selectedEmail && <div className="admin-modal-backdrop employee-editor-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !working) closeEditor() }}>
       <form className="employee-profile-admin-form employee-profile-editor" role="dialog" aria-modal="true" aria-labelledby="employee-editor-title" onSubmit={(event) => void saveEmployee(event)}>
-        <div className="admin-form-heading"><div><h3 id="employee-editor-title">الملف الوظيفي</h3><p dir="ltr">{draft.email}</p></div><button type="button" aria-label="إغلاق" disabled={working} onClick={() => setEditorOpen(false)}><X size={20} /></button></div>
+        <div className="admin-form-heading"><div><h3 id="employee-editor-title">الملف الوظيفي</h3><p dir="ltr">{draft.email}</p></div><button type="button" aria-label="إغلاق" disabled={working} onClick={closeEditor}><X size={20} /></button></div>
         <label className="field"><span>اسم الموظف</span><input value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
         <label className="field"><span>الرقم الوظيفي</span><input required value={draft.employeeCode} onChange={(event) => setDraft((current) => ({ ...current, employeeCode: event.target.value }))} /></label>
         <label className="field"><span>الشركة</span><select required value={draft.company} onChange={(event) => setDraft((current) => ({ ...current, company: event.target.value, branch: '' }))}><option value="">اختر الشركة</option>{organizationOptions.companies.map((company) => <option key={company.name}>{company.name}</option>)}</select></label>
@@ -397,13 +456,22 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         <label className="field"><span>الإحداثيات</span><input value={draft.coordinates} onChange={(event) => setDraft((current) => ({ ...current, coordinates: event.target.value }))} /></label>
         <label className="field"><span>هاتف الموظف المسجل</span><input required type="tel" dir="ltr" value={draft.phone} onChange={(event) => setDraft((current) => ({ ...current, phone: event.target.value, phoneE164: toE164PhoneNumber(event.target.value) }))} /><small>استخدم الصيغة الدولية مع + ورمز الدولة، مثل +9677XXXXXXXX.</small></label>
         <label className="field"><span>واتساب</span><input value={draft.whatsapp} onChange={(event) => setDraft((current) => ({ ...current, whatsapp: event.target.value }))} /></label>
-        <div className="employee-password-help"><strong><Phone size={15} /> دخول الهاتف وكلمة المرور</strong><small>لا تُرسل رسائل SMS. أنشئ حساباً لهذا الموظف في Firebase Authentication باستخدام عنوان الدخول أدناه وكلمة مرور أولية، ثم فعّل الربط. سلّم بيانات الدخول للموظف بطريقة آمنة. لا توجد استعادة ذاتية للهاتف؛ تغيير كلمة المرور يتطلب أداة إدارية موثوقة.</small></div>
+        <div className="employee-password-help"><strong><Phone size={15} /> دخول الهاتف وكلمة المرور</strong><small>إنشاء حساب الدخول يضيف المستخدم إلى Firebase Authentication وينشئ ربطاً خاصاً في Firestore؛ لا تُحفظ كلمة المرور في Firestore. سلّمها للموظف بطريقة آمنة. إعادة تعيين كلمة مرور حساب موجود تتطلب أداة المشرف الموثوقة.</small></div>
         <label className="field"><span>عنوان الدخول الداخلي (Email/Password)</span><span className="password-login-address" dir="ltr">{employeePasswordLoginEmail(draft.phoneE164 || toE164PhoneNumber(draft.phone), firebaseProjectId) || 'تحقق من رقم الهاتف وإعداد المشروع'}</span></label>
+        <div className="employee-password-setup">
+            <div className="employee-password-ready"><strong><Check size={15} /> {passwordLoginEmails.has(selectedEmail) ? 'رابط Firestore موجود' : 'لم يُنشأ رابط الدخول بعد'}</strong><small>لا يمكن للوحة التحقق من وجود المستخدم في Firebase Authentication. جرّب إنشاءه بكلمة مرور أولية؛ إذا كان موجوداً بالفعل فغيّر كلمة مروره بأداة المشرف، أو استخدم «ربط حساب موجود» إذا لم يكن رابط Firestore منشأً.</small></div>
+            <label className="field"><span>كلمة المرور الأولية</span><input type="password" autoComplete="new-password" minLength={8} maxLength={256} value={employeePassword} onChange={(event) => setEmployeePassword(event.target.value)} placeholder="٨ أحرف على الأقل" /></label>
+            <label className="field"><span>تأكيد كلمة المرور</span><input type="password" autoComplete="new-password" minLength={8} maxLength={256} value={employeePasswordConfirmation} onChange={(event) => setEmployeePasswordConfirmation(event.target.value)} placeholder="أعد كتابة كلمة المرور" /></label>
+            <div className="employee-profile-editor-actions">
+              <button type="button" className="admin-add-button" disabled={working || !employeePassword || !employeePasswordConfirmation} onClick={() => void createPasswordLogin()}><KeyRound size={14} /> إنشاء حساب وتعيين كلمة المرور</button>
+              {!passwordLoginEmails.has(selectedEmail) && <button type="button" className="admin-export-button" disabled={working} onClick={() => void enablePasswordLogin()}>ربط حساب موجود</button>}
+            </div>
+          </div>
         <div className="employee-profile-editor-actions">
           <button type="button" className="admin-export-button" disabled={working} onClick={() => void copyPasswordLoginEmail()}>نسخ عنوان الدخول</button>
           {passwordLoginEmails.has(selectedEmail)
             ? <button type="button" className="employee-profile-state-button" disabled={working} onClick={() => void disablePasswordLogin()}>إلغاء ربط الدخول</button>
-            : <button type="button" className="admin-add-button" disabled={working} onClick={() => void enablePasswordLogin()}>تفعيل ربط الدخول</button>}
+            : null}
         </div>
         <small>الإنفاق: {formatYER(draft.currentMonthlySpent)} · فترة الشهر: {draft.spendingPeriod || 'غير محددة'}</small>
         <div className="employee-profile-editor-actions">
