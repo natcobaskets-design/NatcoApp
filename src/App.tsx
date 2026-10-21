@@ -728,6 +728,39 @@ function App() {
     }
   }
 
+  async function requestOrderAction(order: Order, action: 'edit' | 'delete', message: string) {
+    if (!firestore || !authUser || !email) {
+      setNotice('يجب تسجيل الدخول لإرسال طلب متعلق بالطلب.')
+      return false
+    }
+    const requestMessage = message.trim()
+    if (!requestMessage || requestMessage.length > 1000) {
+      setNotice('اكتب سبب الطلب (بحد أقصى ١٠٠٠ حرف).')
+      return false
+    }
+    try {
+      await setDoc(doc(collection(firestore, 'order_action_requests')), {
+        uid: authUser.uid,
+        email: email.trim().toLowerCase(),
+        employeeCode: profile.employeeCode,
+        orderId: order.id,
+        reference: order.reference,
+        action,
+        message: requestMessage,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+      })
+      setNotice(action === 'edit'
+        ? `تم إرسال طلب تعديل الطلب ${order.reference} إلى الإدارة.`
+        : `تم إرسال طلب حذف الطلب ${order.reference} إلى الإدارة.`)
+      return true
+    } catch (error) {
+      console.error(`Unable to submit an employee ${action} request for order ${order.id}.`, error)
+      setNotice(firebaseErrorMessage(error))
+      return false
+    }
+  }
+
   function startCustomization() {
     if (totalBaskets === 0) {
       setNotice('اختر سلة واحدة على الأقل للمتابعة.')
@@ -774,21 +807,11 @@ function App() {
       setNotice('تعذر إكمال الطلب لأن سعر وكيل أحد الأصناف غير محدد. تواصل مع إدارة السلال.')
       return
     }
-    if (exceedsMonthlyLimit) {
-      setNotice('إجمالي الطلب يتجاوز المتبقي من سقفك الشهري. راجع الأصناف أو تواصل مع مسؤول الموارد البشرية.')
-      return
-    }
     if (!pickupBranch) {
       setNotice('اختر فرع الاستلام المفضل قبل تأكيد الطلب.')
       return
     }
     const currentPeriod = currentSpendingPeriod()
-    if (typeof profile.monthlySpendingLimit === 'number' &&
-      profile.spendingPeriod !== currentPeriod &&
-      (Boolean(profile.spendingPeriod) || currentMonthlySpent > 0)) {
-      setNotice('انتهت فترة الإنفاق المسجلة. يرجى التواصل مع المشرف لتصفير رصيد الشهر الجديد قبل تأكيد الطلب.')
-      return
-    }
     if (editingOrderId && activeOrder?.profile.spendingPeriod &&
       activeOrder.profile.spendingPeriod !== currentPeriod) {
       setNotice('لا يمكن تعديل طلب من فترة شهرية سابقة بعد إغلاقها.')
@@ -824,7 +847,35 @@ function App() {
       }
       const rosterRef = doc(firestore, 'employee_roster', employeeEmail)
       const previousAmount = activeOrder?.totalAmount ?? 0
-      const nextMonthlySpent = (profile.currentMonthlySpent ?? 0) + totalAmount - previousAmount
+      failureStage = 'قراءة سجل الموظف والإنفاق الحالي'
+      const rosterSnapshot = await getDoc(rosterRef)
+      if (!rosterSnapshot.exists() || rosterSnapshot.data().active !== true ||
+        rosterSnapshot.data().employeeCode !== profile.employeeCode) {
+        setNotice('تعذر تأكيد الطلب لأن سجل الموظف غير نشط أو لا يطابق الرقم الوظيفي. تواصل مع الموارد البشرية.')
+        return
+      }
+      const freshProfile = buildEmployeeProfile(profile, rosterSnapshot.data(), employeeEmail)
+      if (freshProfile.company !== profile.company) {
+        setNotice('تم تحديث الشركة المرتبطة بحسابك. حدّث الصفحة قبل متابعة الطلب لضمان تطبيق أسعار شركتك.')
+        return
+      }
+      const rosterSpent = typeof rosterSnapshot.data().currentMonthlySpent === 'number'
+        ? rosterSnapshot.data().currentMonthlySpent
+        : 0
+      const rosterPeriod = typeof rosterSnapshot.data().spendingPeriod === 'string'
+        ? rosterSnapshot.data().spendingPeriod
+        : ''
+      if (typeof freshProfile.monthlySpendingLimit === 'number' &&
+        rosterPeriod !== currentPeriod && (Boolean(rosterPeriod) || rosterSpent > 0)) {
+        setNotice('انتهت فترة الإنفاق المسجلة في سجل الموظف. يرجى التواصل مع المشرف لتحديث رصيد الشهر قبل تأكيد الطلب.')
+        return
+      }
+      if (typeof freshProfile.monthlySpendingLimit === 'number' &&
+        totalAmount > freshProfile.monthlySpendingLimit - rosterSpent + previousAmount) {
+        setNotice('إجمالي الطلب يتجاوز المتبقي من سقفك الشهري. راجع الأصناف أو تواصل مع مسؤول الموارد البشرية.')
+        return
+      }
+      const nextMonthlySpent = rosterSpent + totalAmount - previousAmount
       if (nextMonthlySpent < 0) {
         setNotice('تعذر مطابقة قيمة الطلب السابق مع الإنفاق الشهري. راجع المشرف لتصحيح الرصيد.')
         return
@@ -832,13 +883,13 @@ function App() {
       const orderProfile = editingOrderId && activeOrder
         ? {
           ...withoutMonthlySpendingLimit(activeOrder.profile),
-          currentMonthlySpent,
-          ...(typeof profile.monthlySpendingLimit === 'number'
-            ? { monthlySpendingLimit: profile.monthlySpendingLimit }
+          currentMonthlySpent: rosterSpent,
+          ...(typeof freshProfile.monthlySpendingLimit === 'number'
+            ? { monthlySpendingLimit: freshProfile.monthlySpendingLimit }
             : {}),
-          spendingPeriod: profile.spendingPeriod || currentPeriod,
+          spendingPeriod: rosterPeriod || currentPeriod,
         }
-        : profile
+        : freshProfile
       const orderData = {
         reference: editingOrderId
           ? activeOrder?.reference ?? `NATCO-${orderRef.id.slice(-6).toUpperCase()}`
@@ -860,14 +911,29 @@ function App() {
       }
       const ledgerUpdate = {
         currentMonthlySpent: nextMonthlySpent,
-        spendingPeriod: profile.spendingPeriod || currentPeriod,
+        spendingPeriod: rosterPeriod || currentPeriod,
         lastSpendOrderId: orderRef.id,
+      }
+      const syncRef = doc(firestore, 'employee_sync_queue', employeeEmail)
+      const notificationData = {
+        orderId: orderRef.id,
+        uid: authUser.uid,
+        status: 'pending',
+        eventStatus: 'received',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       }
       if (editingOrderId) {
         const batch = writeBatch(firestore)
         batch.update(orderRef, { ...orderData, updatedAt: serverTimestamp() })
         batch.update(rosterRef, ledgerUpdate)
-        failureStage = 'حفظ تعديل الطلب وتحديث سجل الإنفاق ذرياً'
+        batch.set(notificationRef, notificationData, { merge: true })
+        batch.set(syncRef, {
+          email: employeeEmail,
+          status: 'pending',
+          updatedAt: serverTimestamp(),
+        }, { merge: true })
+        failureStage = 'حفظ تعديل الطلب وإشعار المزامنة وتحديث الإنفاق ذرياً'
         await batch.commit()
       } else {
         const batch = writeBatch(firestore)
@@ -878,39 +944,19 @@ function App() {
           updatedAt: serverTimestamp(),
         })
         batch.update(rosterRef, ledgerUpdate)
-        failureStage = 'حفظ الطلب وتحديث سجل الإنفاق ذرياً'
-        await batch.commit()
-      }
-      failureStage = 'إضافة إشعار الإدارة'
-      let notificationQueued = true
-      try {
-        await setDoc(notificationRef, {
-          orderId: orderRef.id,
-          uid: authUser.uid,
-          status: 'pending',
-          ...(editingOrderId ? { eventStatus: 'received', updatedAt: serverTimestamp() } : {}),
-          createdAt: serverTimestamp(),
-        }, { merge: true })
-      } catch (error) {
-        notificationQueued = false
-        console.error('The order was saved, but its notification could not be queued.', error)
-      }
-      failureStage = 'إضافة تحديث مزامنة Google Sheets'
-      let sheetSyncQueued = true
-      try {
-        await setDoc(doc(firestore, 'employee_sync_queue', profile.email.toLowerCase()), {
-          email: profile.email.toLowerCase(),
+        batch.set(notificationRef, notificationData)
+        batch.set(syncRef, {
+          email: employeeEmail,
           status: 'pending',
           updatedAt: serverTimestamp(),
         })
-      } catch (error) {
-        sheetSyncQueued = false
-        console.error('The order was saved, but employee Sheet synchronization could not be queued.', error)
+        failureStage = 'حفظ الطلب وإشعار المزامنة وتحديث الإنفاق ذرياً'
+        await batch.commit()
       }
       setProfile((current) => ({
         ...current,
         currentMonthlySpent: nextMonthlySpent,
-        spendingPeriod: profile.spendingPeriod || currentPeriod,
+        spendingPeriod: rosterPeriod || currentPeriod,
       }))
       const order: Order = {
         ...orderData,
@@ -928,20 +974,16 @@ function App() {
           Object.fromEntries(basketDefinitions.map((basket) => [basket.id, basket.name])),
         )
         : ''
-      setNotice(!notificationQueued
-        ? `${editingOrderId ? editSummary : 'تم تأكيد طلبك.'} حُفظ الطلب، لكن تعذر إرسال إشعار الإدارة. سيظل الطلب ظاهرًا في لوحة الإدارة.`
-        : !sheetSyncQueued
-          ? `${editingOrderId ? editSummary : 'تم تأكيد طلبك.'} حُفظ الإنفاق، لكن تعذرت إضافة تحديث Google Sheets. أبلغ مسؤول النظام لمزامنة السجل.`
-          : editingOrderId
-            ? editSummary
-            : 'تم تأكيد طلبك. سيظهر للمسؤولين في لوحة الإدارة ويُرسل إشعارهم بعد المزامنة.')
+      setNotice(editingOrderId
+        ? editSummary
+        : 'تم تأكيد طلبك وإضافته إلى قائمة مزامنة Google Sheets.')
     } catch (error) {
       console.error('Unable to submit the employee order to Firestore.', {
         stage: failureStage,
         traceId,
         error,
       })
-      setNotice(orderSubmissionErrorMessage(error, Boolean(editingOrderId), traceId))
+      setNotice(`${orderSubmissionErrorMessage(error, Boolean(editingOrderId), traceId)} المرحلة: ${failureStage}.`)
     } finally {
       setBusy(false)
     }
@@ -1065,7 +1107,8 @@ function App() {
       onConfirm: () => void confirmOrder(),
     }}
     receiptProps={{
-      activeOrder, orders: employeeOrders, products, depositInstructions, onEdit: editOrder, onNew: startNewOrder,
+      activeOrder, orders: employeeOrders, products, depositInstructions, onEdit: editOrder,
+      onRequestAction: requestOrderAction, onNew: startNewOrder,
       onSelect: setActiveOrder, onHistory: () => setActiveOrder(null),
     }}
     onProfileEdit={editProfile}

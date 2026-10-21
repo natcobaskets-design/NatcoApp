@@ -62,6 +62,18 @@
 .admin-order-actions select,.admin-select-grid select { height: 30px; min-width: 95px; padding: 0 8px; border: 1px solid #e4e6ec; border-radius: 5px; color: #4b556d; background: #fff; font-size: 8px; }
 .admin-order-actions a { color: #338357; font-size: 8px; text-decoration: none; }
 .admin-order-actions a:hover { text-decoration: underline; }
+.order-action-requests { display: grid; gap: 10px; margin: 14px 0; padding: 13px; border: 1px solid #f0d7bd; border-radius: 8px; background: #fffaf5; }
+.order-action-requests h4 { margin: 0; color: #27334d; font-size: 10px; }
+.order-action-requests > small { color: #8a91a2; font-size: 9px; }
+.order-action-requests article { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 1px solid #f1e7de; }
+.order-action-requests article > div:first-child { display: grid; gap: 4px; min-width: 0; }
+.order-action-requests article strong { color: #24304b; font-size: 9px; }
+.order-action-requests article span,.order-action-requests article small { color: #7c8497; font-size: 8px; overflow-wrap: anywhere; }
+.order-action-requests article p { margin: 2px 0; color: #4f5a73; font-size: 9px; white-space: pre-wrap; }
+.order-action-request-buttons { display: flex; flex-shrink: 0; gap: 6px; }
+.order-action-request-buttons button { min-height: 30px; padding: 0 9px; border: 1px solid #dce3ed; border-radius: 5px; color: #293754; background: #fff; font-size: 8px; }
+.order-action-request-buttons button:first-child { border-color: #d5e8da; color: #287247; background: #f4fbf5; }
+.order-action-request-buttons button:disabled { opacity: .55; cursor: not-allowed; }
 .admin-delete-order { min-height: 30px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid #efcaca; border-radius: 5px; color: #a32121; background: #fff5f5; font-size: 8px; }
 .admin-delete-order:hover:not(:disabled) { background: #fce4e4; }
 .admin-delete-order:disabled { opacity: .6; }
@@ -431,6 +443,10 @@
   .roster-financial-fields { grid-template-columns: repeat(3,minmax(0,1fr)); }
 }
 @media (max-width:760px) {
+  .order-action-requests { padding: 11px; }
+  .order-action-requests article { align-items: stretch; flex-direction: column; }
+  .order-action-request-buttons { flex-wrap: wrap; }
+  .order-action-request-buttons button { min-height: 38px; flex: 1; font-size: 10px; }
   .admin-modal-backdrop { place-items: end center; padding: 0; }
   .admin-product-form { width: 100%; max-width: 560px; max-height: min(92dvh,820px); padding: 18px 16px max(18px,env(safe-area-inset-bottom)); border-radius: 16px 16px 0 0; }
   .admin-form-heading h3 { font-size: 18px; }

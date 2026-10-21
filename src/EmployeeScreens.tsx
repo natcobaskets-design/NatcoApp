@@ -362,7 +362,7 @@ export function BasketCustomization(props: CustomizationProps) {
       <small className="deposit-instruction">بعد تأكيد الطلب، أودع المبلغ في حساب الشركة حسب التعليمات المعروضة في الإيصال. يُنفذ الطلب بعد مراجعة الإيداع من الإدارة.</small>
     </section>
     <div className="progress-card"><div className="progress-top"><span>تأكيد الطلب</span><strong>{props.progress}% <small>مكتمل</small></strong></div><div className="progress-track"><span style={{ width: `${props.progress}%` }} /></div><small>راجع أصنافك ثم أكّد طلبك للاستلام.</small></div>
-    <div className="bottom-action"><button className="text-button" type="button" onClick={props.onBack}><ArrowRight size={16} /> رجوع للسلال</button><button className="primary-button" type="button" disabled={props.busy || !props.products.length || props.hasUnpricedItems || props.exceedsMonthlyLimit || !props.pickupBranch} onClick={props.onConfirm}>{props.busy ? 'جارٍ الإرسال…' : 'تأكيد الطلب'} <span className="button-icon"><Check size={16} /></span></button></div>
+    <div className="bottom-action"><button className="text-button" type="button" onClick={props.onBack}><ArrowRight size={16} /> رجوع للسلال</button><button className="primary-button" type="button" disabled={props.busy || !props.products.length || props.hasUnpricedItems || !props.pickupBranch} onClick={props.onConfirm}>{props.busy ? 'جارٍ الإرسال…' : 'تأكيد الطلب'} <span className="button-icon"><Check size={16} /></span></button></div>
   </div>
 }
 
@@ -372,14 +372,28 @@ export type ReceiptProps = {
   products: CatalogProduct[]
   depositInstructions: string
   onEdit: (order: Order) => void
+  onRequestAction: (order: Order, action: 'edit' | 'delete', message: string) => Promise<boolean>
   onNew: () => void
   onShare: () => void
   onSelect: (order: Order) => void
   onHistory: () => void
 }
 
-export function ReceiptView({ activeOrder, orders, products, depositInstructions, onEdit, onNew, onShare, onSelect, onHistory }: ReceiptProps) {
+export function ReceiptView({ activeOrder, orders, products, depositInstructions, onEdit, onRequestAction, onNew, onShare, onSelect, onHistory }: ReceiptProps) {
   const reduceMotion = useReducedMotion()
+  const [requestMessage, setRequestMessage] = useState('')
+  const [requestBusy, setRequestBusy] = useState(false)
+
+  async function submitOrderAction(action: 'edit' | 'delete') {
+    if (!activeOrder || requestBusy || !requestMessage.trim()) return
+    setRequestBusy(true)
+    try {
+      if (await onRequestAction(activeOrder, action, requestMessage)) setRequestMessage('')
+    } finally {
+      setRequestBusy(false)
+    }
+  }
+
   return <div className="receipt-layout">
     {activeOrder ? <motion.article
       className="receipt-card"
@@ -423,6 +437,16 @@ export function ReceiptView({ activeOrder, orders, products, depositInstructions
         <button className="secondary-button" type="button" onClick={() => onEdit(activeOrder)}>
           <Package size={17} /> تعديل الطلب
         </button>}
+      {activeOrder && !['fulfilled', 'deleted'].includes(activeOrder.status) &&
+        <section className="receipt-action-request">
+          <strong>تحتاج إلى تعديل أو حذف الطلب؟</strong>
+          <small>أرسل طلبك إلى الإدارة؛ سيبقى الطلب كما هو إلى أن تراجعه الإدارة.</small>
+          <textarea maxLength={1000} value={requestMessage} onChange={(event) => setRequestMessage(event.target.value)} placeholder="اكتب سبب الطلب والتغيير المطلوب" />
+          <div>
+            <button className="secondary-button" type="button" disabled={requestBusy || !requestMessage.trim()} onClick={() => void submitOrderAction('edit')}>طلب تعديل من الإدارة</button>
+            <button className="employee-profile-state-button" type="button" disabled={requestBusy || !requestMessage.trim()} onClick={() => void submitOrderAction('delete')}>طلب حذف الطلب</button>
+          </div>
+        </section>}
       <button className="primary-button" type="button" onClick={onNew}>طلب جديد <ArrowLeft size={17} /></button>
       <button className="text-button history-toggle" type="button" onClick={onHistory}><Clock3 size={16} /> عرض الطلبات السابقة</button>
     </div>

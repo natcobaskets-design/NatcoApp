@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import {
   collection, deleteField, doc, getDoc, getDocs, onSnapshot, orderBy, query,
-  runTransaction, serverTimestamp, where, writeBatch,
+  runTransaction, serverTimestamp, updateDoc, where, writeBatch,
 } from 'firebase/firestore'
 import {
   Archive, Building2, Check, ClipboardList, Download, ImagePlus, LoaderCircle, Mail, Package,
@@ -849,6 +849,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       {!loading && tab === 'orders' && <section className="admin-panel">
         <div className="admin-panel-heading"><div><h3>طلبات الموظفين</h3><p>تتحدث القائمة تلقائياً عند وصول طلب جديد.</p></div><div className="admin-data-actions"><span>{filteredOrders.length} من {orders.length} طلب</span><button type="button" className="admin-export-button" disabled={exporting || !orders.length} onClick={() => void deliverOrders(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !orders.length} onClick={() => void deliverOrders(true)}><Share2 size={14} /> مشاركة</button><button type="button" className="admin-export-button" disabled={exporting || !orders.some((order) => order.status === 'fulfilled')} onClick={() => void exportCompletedOrders()}><Download size={14} /> تصدير SAP</button><button type="button" className="admin-export-button" disabled={!orders.length} onClick={printCompletedOrderReport}>طباعة التقرير الكامل</button></div></div>
         <label className="admin-search"><Search size={16} /><input type="search" value={orderSearch} onChange={(event) => setOrderSearch(event.target.value)} placeholder="ابحث برقم الطلب أو اسم الموظف أو بريده أو كوده..." aria-label="البحث في طلبات الموظفين" /></label>
+        <OrderActionRequests user={user} onNotice={onNotice} />
         {orders.length === 0 ? <div className="admin-empty"><ClipboardList size={33} /><strong>لا توجد طلبات حتى الآن</strong><small>تظهر الطلبات الجديدة هنا عند تأكيد الموظفين لها.</small></div> :
           filteredOrders.length === 0 ? <div className="admin-empty"><Search size={30} /><strong>لا توجد نتائج مطابقة</strong><small>جرّب البحث برقم الطلب أو بيانات الموظف.</small></div> :
           <div className="admin-order-list">{filteredOrders.map((order) => <article className={`admin-order status-${order.status}`} key={order.id}>
@@ -970,4 +971,77 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       </div>}
     </div>
   )
+}
+
+type OrderActionRequest = {
+  id: string
+  uid: string
+  email: string
+  employeeCode: string
+  orderId: string
+  reference: string
+  action: 'edit' | 'delete'
+  message: string
+}
+
+function OrderActionRequests({ user, onNotice }: { user: User; onNotice: (message: string) => void }) {
+  const [requests, setRequests] = useState<OrderActionRequest[]>([])
+  const [working, setWorking] = useState(false)
+
+  useEffect(() => {
+    if (!firestore) return
+    return onSnapshot(query(collection(firestore, 'order_action_requests'), where('status', '==', 'pending')), (snapshot) => {
+      setRequests(snapshot.docs.map((item) => {
+        const data = item.data()
+        return {
+          id: item.id,
+          uid: typeof data.uid === 'string' ? data.uid : '',
+          email: typeof data.email === 'string' ? data.email : '',
+          employeeCode: typeof data.employeeCode === 'string' ? data.employeeCode : '',
+          orderId: typeof data.orderId === 'string' ? data.orderId : '',
+          reference: typeof data.reference === 'string' ? data.reference : '',
+          action: data.action === 'delete' ? 'delete' : 'edit',
+          message: typeof data.message === 'string' ? data.message : '',
+        }
+      }))
+    }, (error) => {
+      console.error('Unable to load employee order action requests.', error)
+      onNotice(firebaseErrorMessage(error))
+    })
+  }, [onNotice])
+
+  async function resolveRequest(request: OrderActionRequest, status: 'reviewed' | 'rejected') {
+    if (!firestore || working) return
+    setWorking(true)
+    try {
+      await updateDoc(doc(firestore, 'order_action_requests', request.id), {
+        status,
+        reviewedBy: user.uid,
+        reviewedAt: serverTimestamp(),
+      })
+      onNotice(status === 'reviewed'
+        ? `تم تعليم طلب ${request.action === 'edit' ? 'تعديل' : 'حذف'} ${request.reference} بأنه عولج. نفّذ التغيير من بطاقة الطلب عند الحاجة.`
+        : `تم رفض طلب ${request.action === 'edit' ? 'تعديل' : 'حذف'} ${request.reference}.`)
+    } catch (error) {
+      console.error(`Unable to resolve employee order action request ${request.id}.`, error)
+      onNotice(firebaseErrorMessage(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  return <section className="order-action-requests">
+    <h4>طلبات تعديل أو حذف الطلبات ({requests.length})</h4>
+    {!requests.length ? <small>لا توجد طلبات معلقة من الموظفين.</small> : requests.map((request) => <article key={request.id}>
+      <div><strong>{request.action === 'edit' ? 'طلب تعديل' : 'طلب حذف'} · {request.reference}</strong>
+        <span>{request.email} · الكود الوظيفي: {request.employeeCode}</span>
+        <p>{request.message}</p>
+        <small>معرّف الطلب: {request.orderId}</small>
+      </div>
+      <div className="order-action-request-buttons">
+        <button type="button" disabled={working} onClick={() => void resolveRequest(request, 'reviewed')}>تمت المعالجة</button>
+        <button type="button" disabled={working} onClick={() => void resolveRequest(request, 'rejected')}>رفض الطلب</button>
+      </div>
+    </article>)}
+  </section>
 }

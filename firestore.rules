@@ -559,12 +559,15 @@ service cloud.firestore {
         && (!request.resource.data.keys().hasAny(['eventStatus'])
           || request.resource.data.eventStatus == 'received')
         && request.resource.data.createdAt == request.time
-        && get(
+        && getAfter(
           /databases/$(database)/documents/orders/$(orderId)
         ).data.uid == request.auth.uid
-        && get(
+        && getAfter(
           /databases/$(database)/documents/orders/$(orderId)
         ).data.status == 'received'
+        && getAfter(
+          /databases/$(database)/documents/orders/$(orderId)
+        ).data.email == employeeEmail()
         && (!request.resource.data.keys().hasAny(['updatedAt'])
           || request.resource.data.updatedAt == request.time);
       allow create: if isAdmin()
@@ -664,6 +667,49 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['status', 'reviewedBy', 'reviewedAt'])
         && request.resource.data.status == 'reviewed'
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt == request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /order_action_requests/{requestId} {
+      allow get: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow list: if isAdmin();
+      allow create: if signedIn()
+        && isApprovedEmployee()
+        && request.resource.data.keys().hasAll([
+          'uid', 'email', 'employeeCode', 'orderId', 'reference',
+          'action', 'message', 'status', 'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'employeeCode', 'orderId', 'reference',
+          'action', 'message', 'status', 'createdAt'
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == employeeEmail()
+        && request.resource.data.employeeCode == get(rosterPath()).data.employeeCode
+        && request.resource.data.orderId is string
+        && exists(/databases/$(database)/documents/orders/$(request.resource.data.orderId))
+        && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.uid
+          == request.auth.uid
+        && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.email
+          == employeeEmail()
+        && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.status
+          in ['received', 'preparing', 'ready']
+        && request.resource.data.reference
+          == get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.reference
+        && request.resource.data.action in ['edit', 'delete']
+        && request.resource.data.message is string
+        && request.resource.data.message.size() > 0
+        && request.resource.data.message.size() <= 1000
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time;
+      allow update: if isAdmin()
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'reviewedBy', 'reviewedAt'])
+        && request.resource.data.status in ['reviewed', 'rejected']
         && request.resource.data.reviewedBy == request.auth.uid
         && request.resource.data.reviewedAt == request.time;
       allow delete: if isAdmin();
