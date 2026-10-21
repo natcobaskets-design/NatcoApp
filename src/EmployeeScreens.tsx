@@ -360,7 +360,10 @@ export function ReceiptView({ activeOrder, orders, products, depositInstructions
     </div>}
     <div className="receipt-actions">
       {activeOrder && <button className="whatsapp-button" type="button" onClick={onShare}><span className="whatsapp-mark">◉</span> مشاركة الإيصال عبر واتساب</button>}
-      {activeOrder?.status === 'received' && <button className="secondary-button" type="button" onClick={() => onEdit(activeOrder)}><Package size={17} /> تعديل الطلب</button>}
+      {activeOrder?.status === 'received' && (activeOrder.editCount ?? 0) < 1 &&
+        <button className="secondary-button" type="button" onClick={() => onEdit(activeOrder)}>
+          <Package size={17} /> تعديل الطلب
+        </button>}
       <button className="primary-button" type="button" onClick={onNew}>طلب جديد <ArrowLeft size={17} /></button>
       <button className="text-button history-toggle" type="button" onClick={onHistory}><Clock3 size={16} /> عرض الطلبات السابقة</button>
     </div>

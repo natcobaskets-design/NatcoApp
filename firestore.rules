@@ -297,7 +297,7 @@ service cloud.firestore {
           'reference', 'uid', 'email', 'employeeCode', 'profile',
           'baskets', 'items', 'itemDetails', 'excluded', 'status',
           'createdAt', 'updatedAt', 'pickupBranch', 'totalAmount', 'currency',
-          'basketSelections'
+          'basketSelections', 'editCount'
         ])
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.email == request.auth.token.email
@@ -345,6 +345,7 @@ service cloud.firestore {
         && request.resource.data.excluded is list
         && request.resource.data.excluded.size() <= 50
         && request.resource.data.status == 'received'
+        && request.resource.data.get('editCount', 0) == 0
         && request.resource.data.createdAt == request.time
         && request.resource.data.updatedAt == request.time;
 
@@ -368,7 +369,25 @@ service cloud.firestore {
           && request.resource.data.status == resource.data.status
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(['baskets', 'items', 'itemDetails', 'excluded', 'updatedAt',
-              'pickupBranch', 'totalAmount', 'currency', 'basketSelections'])
+              'pickupBranch', 'totalAmount', 'currency', 'basketSelections',
+              'profile', 'editCount'])
+          && resource.data.get('editCount', 0) == 0
+          && request.resource.data.editCount == 1
+          && request.resource.data.profile.diff(resource.data.profile)
+            .affectedKeys().hasOnly([
+              'currentMonthlySpent', 'spendingPeriod', 'monthlySpendingLimit'
+            ])
+          && request.resource.data.profile.get('email', '') == request.auth.token.email
+          && request.resource.data.profile.get('employeeCode', '')
+            == resource.data.employeeCode
+          && request.resource.data.profile.get('company', '')
+            == get(rosterPath()).data.get('company', '')
+          && request.resource.data.profile.get('currentMonthlySpent', 0)
+            == get(rosterPath()).data.get('currentMonthlySpent', 0)
+          && request.resource.data.profile.get('spendingPeriod', '')
+            == getAfter(rosterPath()).data.get('spendingPeriod', '')
+          && request.resource.data.profile.get('monthlySpendingLimit', -1)
+            == get(rosterPath()).data.get('monthlySpendingLimit', -1)
           && (request.resource.data.keys().hasAny(['basketSelections'])
             ? validBasketSelection(request.resource.data.basketSelections, request.resource.data.baskets)
             : validBasketCounts(request.resource.data.baskets))
@@ -378,7 +397,8 @@ service cloud.firestore {
           && request.resource.data.excluded.size() <= 50
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(['baskets', 'items', 'itemDetails', 'excluded', 'updatedAt',
-              'pickupBranch', 'totalAmount', 'currency', 'basketSelections'])
+              'pickupBranch', 'totalAmount', 'currency', 'basketSelections',
+              'profile', 'editCount'])
           && (!get(rosterPath()).data.keys().hasAny(['monthlySpendingLimit'])
             || (request.resource.data.totalAmount is number
               && request.resource.data.totalAmount >= 0

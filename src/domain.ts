@@ -103,6 +103,7 @@ export type Order = {
   itemDetails: Record<string, { name: string; imageUrl?: string; agentPrice?: number; lineTotal?: number }>
   excluded: string[]
   status: OrderStatus
+  editCount?: number
   totalAmount?: number
   currency?: string
   pickupBranch?: string
@@ -312,6 +313,8 @@ export function parseOrder(id: string, data: Record<string, unknown>): Order | n
     itemDetails,
     excluded: data.excluded.filter((item): item is string => typeof item === 'string'),
     status: data.status as OrderStatus,
+    editCount: Number.isInteger(data.editCount) && Number(data.editCount) >= 0
+      ? Number(data.editCount) : 0,
     ...(typeof data.totalAmount === 'number' && Number.isFinite(data.totalAmount)
       ? { totalAmount: data.totalAmount } : {}),
     ...(typeof data.currency === 'string' ? { currency: data.currency } : {}),

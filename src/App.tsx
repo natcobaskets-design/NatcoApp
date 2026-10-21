@@ -49,18 +49,28 @@ function currentSpendingPeriod(): string {
   return new Date().toISOString().slice(0, 7)
 }
 
-function orderSubmissionErrorMessage(error: unknown, stage: string, traceId: string): string {
+function withoutMonthlySpendingLimit(profile: EmployeeProfile): EmployeeProfile {
+  const { monthlySpendingLimit, ...profileWithoutLimit } = profile
+  return typeof monthlySpendingLimit === 'number' ? profileWithoutLimit : profile
+}
+
+function orderSubmissionErrorMessage(error: unknown, isEditing: boolean, traceId: string): string {
   const failure = error && typeof error === 'object'
     ? error as { code?: unknown; message?: unknown }
     : null
-  const code = typeof failure?.code === 'string' ? failure.code : 'unknown'
-  const details = typeof failure?.message === 'string'
-    ? failure.message.replace(/\s+/g, ' ').trim().slice(0, 180)
-    : firebaseErrorMessage(error)
-  const cause = code === 'permission-denied'
-    ? 'رفضت قواعد Firestore الكتابة.'
-    : 'تعذر حفظ الطلب في Firestore.'
-  return `${cause} رمز Firebase: ${code}. المرحلة: ${stage}. رقم التتبع: ${traceId}. التفاصيل: ${details}`
+  const errorCode = typeof failure?.code === 'string' ? failure.code : 'unknown'
+  const action = isEditing ? 'تعديل' : 'تأكيد'
+  const errorName = errorCode === 'permission-denied'
+    ? 'NOT_ALLOWED'
+    : errorCode === 'unavailable'
+      ? 'TEMPORARILY_UNAVAILABLE'
+      : errorCode === 'deadline-exceeded'
+        ? 'TIMED_OUT'
+        : errorCode === 'resource-exhausted'
+          ? 'TRY_AGAIN_LATER'
+          : 'FAILED'
+  const errorCodeLabel = `ORDER_${isEditing ? 'EDIT' : 'SUBMISSION'}_${errorName}`
+  return `تعذر ${action} الطلب. رمز الخطأ: ${errorCodeLabel}. رقم المتابعة: ${traceId}.`
 }
 
 function App() {
@@ -637,6 +647,16 @@ function App() {
         setNotice('تعذر مطابقة قيمة الطلب السابق مع الإنفاق الشهري. راجع المشرف لتصحيح الرصيد.')
         return
       }
+      const orderProfile = editingOrderId && activeOrder
+        ? {
+          ...withoutMonthlySpendingLimit(activeOrder.profile),
+          currentMonthlySpent,
+          ...(typeof profile.monthlySpendingLimit === 'number'
+            ? { monthlySpendingLimit: profile.monthlySpendingLimit }
+            : {}),
+          spendingPeriod: profile.spendingPeriod || currentPeriod,
+        }
+        : profile
       const orderData = {
         reference: editingOrderId
           ? activeOrder?.reference ?? `NATCO-${orderRef.id.slice(-6).toUpperCase()}`
@@ -644,7 +664,7 @@ function App() {
         uid: authUser.uid,
         email: authUser.email?.toLowerCase() ?? profile.email.toLowerCase(),
         employeeCode: profile.employeeCode,
-        profile,
+        profile: orderProfile,
         baskets: { ...counts },
         basketSelections: Object.entries(counts).flatMap(([basketId, amount]) =>
           Array.from({ length: amount }, () => basketId)),
@@ -654,6 +674,7 @@ function App() {
         pickupBranch,
         totalAmount,
         currency: 'YER',
+        editCount: editingOrderId ? 1 : 0,
       }
       const ledgerUpdate = {
         currentMonthlySpent: nextMonthlySpent,
@@ -729,7 +750,7 @@ function App() {
         traceId,
         error,
       })
-      setNotice(orderSubmissionErrorMessage(error, failureStage, traceId))
+      setNotice(orderSubmissionErrorMessage(error, Boolean(editingOrderId), traceId))
     } finally {
       setBusy(false)
     }
@@ -741,6 +762,10 @@ function App() {
   }
 
   function editOrder(order: Order) {
+    if ((order.editCount ?? 0) >= 1) {
+      setNotice('تم استخدام التعديل المسموح لهذا الطلب.')
+      return
+    }
     if (order.status !== 'received') {
       setNotice('بدأ تجهيز هذا الطلب. تواصل مع إدارة ناتكو لتعديله.')
       return
