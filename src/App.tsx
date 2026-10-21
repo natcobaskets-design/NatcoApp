@@ -49,17 +49,18 @@ function currentSpendingPeriod(): string {
   return new Date().toISOString().slice(0, 7)
 }
 
-function orderSubmissionErrorMessage(error: unknown): string {
-  if (!error || typeof error !== 'object') return firebaseErrorMessage(error)
-  const failure = error as { code?: unknown; message?: unknown }
-  if (failure.code === 'permission-denied') {
-    return 'رفضت قواعد Firestore تأكيد الطلب أو تحديث الإنفاق. انشر آخر firestore.rules وتأكد من اعتماد الموظف وصحة سقفه الشهري.'
-  }
-  if (typeof failure.message === 'string' &&
-    /(?:maximum.*size|too large|exceeds.*size|document.*size)/i.test(failure.message)) {
-    return 'حجم الطلب أكبر من المسموح. أزل صور المنتجات الكبيرة أو اطلب من المشرف تقليل حجم صور الكتالوج.'
-  }
-  return firebaseErrorMessage(error)
+function orderSubmissionErrorMessage(error: unknown, stage: string, traceId: string): string {
+  const failure = error && typeof error === 'object'
+    ? error as { code?: unknown; message?: unknown }
+    : null
+  const code = typeof failure?.code === 'string' ? failure.code : 'unknown'
+  const details = typeof failure?.message === 'string'
+    ? failure.message.replace(/\s+/g, ' ').trim().slice(0, 180)
+    : firebaseErrorMessage(error)
+  const cause = code === 'permission-denied'
+    ? 'رفضت قواعد Firestore الكتابة.'
+    : 'تعذر حفظ الطلب في Firestore.'
+  return `${cause} رمز Firebase: ${code}. المرحلة: ${stage}. رقم التتبع: ${traceId}. التفاصيل: ${details}`
 }
 
 function App() {
@@ -607,6 +608,8 @@ function App() {
       return
     }
     setBusy(true)
+    let failureStage = 'تجهيز بيانات الطلب'
+    let traceId = 'غير متاح'
     try {
       const itemDetails = Object.fromEntries(products
         .filter((product) => (quantities[product.id] ?? 0) > 0)
@@ -625,6 +628,7 @@ function App() {
       const orderRef = editingOrderId
         ? doc(firestore, 'orders', editingOrderId)
         : doc(collection(firestore, 'orders'))
+      traceId = orderRef.id
       const notificationRef = doc(firestore, 'order_notifications', orderRef.id)
       const employeeRef = doc(firestore, 'employees', authUser.uid)
       const rosterRef = doc(firestore, 'employee_roster', authUser.email?.trim().toLowerCase() ?? profile.email)
@@ -662,6 +666,7 @@ function App() {
         batch.update(orderRef, { ...orderData, updatedAt: serverTimestamp() })
         batch.update(employeeRef, ledgerUpdate)
         batch.update(rosterRef, ledgerUpdate)
+        failureStage = 'حفظ تعديل الطلب وتحديث سجل الإنفاق ذرياً'
         await batch.commit()
       } else {
         const batch = writeBatch(firestore)
@@ -673,8 +678,10 @@ function App() {
         })
         batch.update(employeeRef, ledgerUpdate)
         batch.update(rosterRef, ledgerUpdate)
+        failureStage = 'حفظ الطلب وتحديث سجل الإنفاق ذرياً'
         await batch.commit()
       }
+      failureStage = 'إضافة إشعار الإدارة'
       let notificationQueued = true
       try {
         await setDoc(notificationRef, {
@@ -688,6 +695,7 @@ function App() {
         notificationQueued = false
         console.error('The order was saved, but its notification could not be queued.', error)
       }
+      failureStage = 'إضافة تحديث مزامنة Google Sheets'
       let sheetSyncQueued = true
       try {
         await setDoc(doc(firestore, 'employee_sync_queue', profile.email.toLowerCase()), {
@@ -719,8 +727,12 @@ function App() {
           ? 'تم تأكيد طلبك وحُفظ الإنفاق، لكن تعذرت إضافة تحديث Google Sheets. أبلغ مسؤول النظام لمزامنة السجل.'
           : 'تم تأكيد طلبك. سيظهر للمسؤولين في لوحة الإدارة ويُرسل إشعارهم بعد المزامنة.')
     } catch (error) {
-      console.error('Unable to submit the employee order to Firestore.', error)
-      setNotice(orderSubmissionErrorMessage(error))
+      console.error('Unable to submit the employee order to Firestore.', {
+        stage: failureStage,
+        traceId,
+        error,
+      })
+      setNotice(orderSubmissionErrorMessage(error, failureStage, traceId))
     } finally {
       setBusy(false)
     }
