@@ -195,21 +195,20 @@ service cloud.firestore {
           && request.resource.data.coordinates.size() <= 100
           && request.resource.data.phone is string
           && request.resource.data.phone.size() <= 30
+          && request.resource.data.phone == get(rosterPath()).data.get('phone', '')
           && request.resource.data.whatsapp is string
           && request.resource.data.whatsapp.size() <= 30);
       allow update: if isAdmin()
         || (signedIn() && request.auth.uid == uid
           && isApprovedEmployee()
           && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['name', 'address', 'coordinates', 'phone', 'whatsapp'])
+            .hasOnly(['name', 'address', 'coordinates', 'whatsapp'])
           && request.resource.data.name is string
           && request.resource.data.name.size() <= 120
           && request.resource.data.address is string
           && request.resource.data.address.size() <= 500
           && request.resource.data.coordinates is string
           && request.resource.data.coordinates.size() <= 100
-          && request.resource.data.phone is string
-          && request.resource.data.phone.size() <= 30
           && request.resource.data.whatsapp is string
           && request.resource.data.whatsapp.size() <= 30);
       allow delete: if isAdmin();
@@ -414,7 +413,7 @@ service cloud.firestore {
               && getAfter(rosterPath()).data.lastSpendOrderId == orderId))
           && request.resource.data.updatedAt == request.time;
 
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
     match /order_notifications/{orderId} {
@@ -455,6 +454,16 @@ service cloud.firestore {
         && request.resource.data.emailSentAt == request.time
         && request.resource.data.createdAt == request.time
         && request.resource.data.updatedAt == request.time;
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly([
+          'orderId', 'uid', 'status', 'eventStatus', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.orderId == orderId
+        && request.resource.data.uid is string
+        && request.resource.data.status == 'pending'
+        && request.resource.data.eventStatus == 'deleted'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
       allow update: if (isAdmin()
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['status', 'eventStatus', 'updatedAt'])
@@ -483,6 +492,12 @@ service cloud.firestore {
           && get(
             /databases/$(database)/documents/orders/$(orderId)
           ).data.status == 'received');
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'eventStatus', 'updatedAt'])
+        && request.resource.data.status == 'pending'
+        && request.resource.data.eventStatus == 'deleted'
+        && request.resource.data.updatedAt == request.time;
       allow delete: if false;
     }
 

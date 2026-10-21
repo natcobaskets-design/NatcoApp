@@ -2,26 +2,26 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import {
   collection, deleteField, doc, getDoc, getDocs, onSnapshot, orderBy, query,
-  serverTimestamp, where, writeBatch,
+  runTransaction, serverTimestamp, where, writeBatch,
 } from 'firebase/firestore'
 import {
-  Archive, Building2, Check, ClipboardList, Download, Edit3, ImagePlus, LoaderCircle, Mail, Package,
+  Archive, Building2, Check, ClipboardList, Download, ImagePlus, LoaderCircle, Mail, Package,
   Plus, Search, Share2, ShieldCheck, Trash2, Upload, Users, X,
 } from 'lucide-react'
+import { AdminEmployeeProfiles } from './AdminEmployeeProfiles'
 import { AdminIntegrationSettings } from './AdminIntegrationSettings'
 import { AdminOrganizationSettings } from './AdminOrganizationSettings'
 import { AdminBasketManagement } from './AdminBasketManagement'
-import { AdminEmployeeProfiles } from './AdminEmployeeProfiles'
 import { firebaseErrorMessage, firestore } from './firebase'
 import {
-  employeesToCsv, filterEmployees, filterOrders, ordersToCsv, printCompletedOrders,
+  employeesToCsv, filterOrders, ordersToCsv, printOrderReport,
   sapCompletedOrdersToCsv, shareOrDownloadCsv, type EmployeeEntry,
 } from './adminExports'
 import {
   orderStatusLabels, parseCatalogProduct, parseOrder, productCatalogSeed,
   productDepartments, type CatalogProduct, type Order, type OrderStatus, type OrganizationOptions,
 } from './domain'
-import { parseRosterCsv, rosterImportLimit, type RosterImportPreview } from './rosterImport'
+import { normalizePhone, parseRosterCsv, rosterImportLimit, type RosterImportPreview } from './rosterImport'
 import { parseProductCsv, productImportLimit, type ProductImportPreview } from './productImport'
 import './AdminConsole.css'
 
@@ -59,12 +59,11 @@ function readImageAsDataUrl(file: File): Promise<string> {
 }
 
 export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, organizationOptions }: Props) {
-  const [tab, setTab] = useState<'orders' | 'products' | 'baskets' | 'employees' | 'employee-profiles' | 'settings' | 'organization'>('orders')
+  const [tab, setTab] = useState<'orders' | 'products' | 'baskets' | 'employees' | 'settings' | 'organization'>('orders')
   const [orders, setOrders] = useState<Order[]>([])
   const [products, setProducts] = useState<CatalogProduct[]>([])
   const [employees, setEmployees] = useState<EmployeeEntry[]>([])
   const [orderSearch, setOrderSearch] = useState('')
-  const [employeeSearch, setEmployeeSearch] = useState('')
   const [exporting, setExporting] = useState(false)
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState(false)
@@ -80,14 +79,12 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
   const previewRef = useRef('')
   const [email, setEmail] = useState('')
   const [employeeCode, setEmployeeCode] = useState('')
-  const [editingEmployee, setEditingEmployee] = useState<EmployeeEntry | null>(null)
-  const [employeeEditDraft, setEmployeeEditDraft] = useState({ company: '', monthlySpendingLimit: '', currentMonthlySpent: '0' })
+  const [employeePhone, setEmployeePhone] = useState('')
   const [rosterFileName, setRosterFileName] = useState('')
   const [rosterPreview, setRosterPreview] = useState<RosterImportPreview | null>(null)
   const [importedRows, setImportedRows] = useState(0)
   const [issue, setIssue] = useState('')
   const filteredOrders = filterOrders(orders, orderSearch)
-  const filteredEmployees = filterEmployees(employees, employeeSearch)
   const productSubcategories = productDepartments.find((item) => item.id === productDepartmentFilter)?.categories ?? []
   const filteredProducts = products.filter((product) =>
     (productDepartmentFilter === 'all' || product.department === productDepartmentFilter) &&
@@ -116,9 +113,9 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
 
   function printCompletedOrderReport() {
     try {
-      printCompletedOrders(orders, products)
+      printOrderReport(orders, products)
     } catch (error) {
-      console.error('Unable to open the SAP completed-order print view.', error)
+      console.error('Unable to print the complete order report.', error)
       onNotice(error instanceof Error ? error.message : 'تعذرت طباعة الطلبات المكتملة.')
     }
   }
@@ -160,8 +157,15 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       setEmployees(snapshot.docs.map((item) => ({
         email: item.id,
         employeeCode: typeof item.data().employeeCode === 'string' ? item.data().employeeCode : '',
+        ...(typeof item.data().name === 'string' ? { name: item.data().name } : {}),
+        ...(typeof item.data().phone === 'string' ? { phone: item.data().phone } : {}),
+        ...(typeof item.data().whatsapp === 'string' ? { whatsapp: item.data().whatsapp } : {}),
         active: item.data().active === true,
         ...(typeof item.data().company === 'string' ? { company: item.data().company } : {}),
+        ...(typeof item.data().branch === 'string' ? { branch: item.data().branch } : {}),
+        ...(typeof item.data().province === 'string' ? { province: item.data().province } : {}),
+        ...(typeof item.data().address === 'string' ? { address: item.data().address } : {}),
+        ...(typeof item.data().coordinates === 'string' ? { coordinates: item.data().coordinates } : {}),
         ...(typeof item.data().monthlySpendingLimit === 'number' ? { monthlySpendingLimit: item.data().monthlySpendingLimit } : {}),
         ...(typeof item.data().currentMonthlySpent === 'number' ? { currentMonthlySpent: item.data().currentMonthlySpent } : {}),
         ...(typeof item.data().spendingPeriod === 'string' ? { spendingPeriod: item.data().spendingPeriod } : {}),
@@ -289,7 +293,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
   }
 
   async function setOrderStatus(order: Order, status: OrderStatus) {
-    if (!firestore) return
+    if (!firestore || status === order.status) return
     setWorking(true)
     try {
       const orderRef = doc(firestore, 'orders', order.id)
@@ -315,9 +319,70 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         })
       }
       await batch.commit()
-      onNotice(`تم تحديث الطلب ${order.reference} إلى «${orderStatusLabels[status]}».`)
+      onNotice(`تم التعديل على الطلب ${order.reference}.\nالحالة السابقة: ${orderStatusLabels[order.status]}.\nالحالة الحالية: ${orderStatusLabels[status]}.`)
     } catch (error) {
       console.error(`Unable to update order ${order.reference}.`, error)
+      onNotice(firebaseErrorMessage(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  async function permanentlyDeleteOrder(order: Order) {
+    if (!firestore || !window.confirm(`حذف الطلب ${order.reference} نهائياً؟ سيُحذف من التطبيق وGoogle Sheets، ولا يمكن التراجع.`)) return
+    const database = firestore
+    setWorking(true)
+    try {
+      const orderRef = doc(database, 'orders', order.id)
+      const notificationRef = doc(database, 'order_notifications', order.id)
+      const rosterRef = doc(database, 'employee_roster', order.profile.email.toLowerCase())
+      const currentPeriod = currentSpendingPeriod()
+      await runTransaction(database, async (transaction) => {
+        const orderSnapshot = await transaction.get(orderRef)
+        const notificationSnapshot = await transaction.get(notificationRef)
+        const rosterSnapshot = await transaction.get(rosterRef)
+        if (!orderSnapshot.exists()) return
+        const liveOrder = parseOrder(orderSnapshot.id, orderSnapshot.data())
+        if (!liveOrder) throw new Error('بيانات الطلب غير صالحة للحذف.')
+        transaction.delete(orderRef)
+        if (notificationSnapshot.exists()) {
+          transaction.set(notificationRef, {
+            status: 'pending',
+            eventStatus: 'deleted',
+            updatedAt: serverTimestamp(),
+          }, { merge: true })
+        } else {
+          transaction.set(notificationRef, {
+            orderId: liveOrder.id,
+            uid: liveOrder.uid,
+            status: 'pending',
+            eventStatus: 'deleted',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          })
+        }
+        if (rosterSnapshot.exists() &&
+          liveOrder.profile.spendingPeriod === currentPeriod &&
+          rosterSnapshot.data().spendingPeriod === currentPeriod &&
+          typeof liveOrder.totalAmount === 'number') {
+          const spent = rosterSnapshot.data().currentMonthlySpent
+          if (typeof spent !== 'number' || !Number.isFinite(spent)) {
+            throw new Error('رصيد الإنفاق الشهري غير صالح؛ صححه قبل حذف الطلب.')
+          }
+          transaction.update(rosterRef, {
+            currentMonthlySpent: Math.max(0, spent - liveOrder.totalAmount),
+            updatedAt: serverTimestamp(),
+          })
+          transaction.set(doc(database, 'employee_sync_queue', liveOrder.profile.email.toLowerCase()), {
+            email: liveOrder.profile.email.toLowerCase(),
+            status: 'pending',
+            updatedAt: serverTimestamp(),
+          }, { merge: true })
+        }
+      })
+      onNotice(`حُذف الطلب ${order.reference} نهائياً من النظام، وأُرسلت إشارة لحذفه من Google Sheets.`)
+    } catch (error) {
+      console.error(`Unable to permanently delete order ${order.reference}.`, error)
       onNotice(firebaseErrorMessage(error))
     } finally {
       setWorking(false)
@@ -328,13 +393,32 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     event.preventDefault()
     if (!firestore) return
     const normalizedEmail = email.trim().toLowerCase()
+    const normalizedPhone = normalizePhone(employeePhone)
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || !employeeCode.trim() ||
-      employeeCode.trim().length > 80) {
-      onNotice('أدخل بريداً إلكترونياً صحيحاً وكوداً وظيفياً لا يتجاوز ٨٠ حرفاً.')
+      employeeCode.trim().length > 80 ||
+      !/^\+?[\d\s()-]{8,30}$/.test(employeePhone.trim()) ||
+      normalizedPhone.length < 8 || normalizedPhone.length > 18) {
+      onNotice('أدخل بريداً إلكترونياً صحيحاً وكوداً وظيفياً ورقم هاتف صالحاً.')
       return
     }
     setWorking(true)
     try {
+      const duplicateCodes = await getDocs(query(
+        collection(firestore, 'employee_roster'),
+        where('employeeCode', '==', employeeCode.trim()),
+      ))
+      if (duplicateCodes.docs.some((item) => item.id !== normalizedEmail)) {
+        onNotice('هذا الرقم الوظيفي مرتبط بسجل موظف آخر.')
+        return
+      }
+      const duplicatePhones = await getDocs(query(
+        collection(firestore, 'employee_roster'),
+        where('phoneLookup', '==', normalizedPhone),
+      ))
+      if (duplicatePhones.docs.some((item) => item.id !== normalizedEmail)) {
+        onNotice('رقم الهاتف مرتبط بسجل موظف آخر.')
+        return
+      }
       const rosterRef = doc(firestore, 'employee_roster', normalizedEmail)
       if ((await getDoc(rosterRef)).exists()) {
         onNotice('هذا البريد معتمد مسبقاً. استخدم زر التعديل في سجل الموظف.')
@@ -345,6 +429,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       batch.set(rosterRef, {
         email: normalizedEmail,
         employeeCode: employeeCode.trim(),
+        phone: employeePhone.trim(),
+        phoneLookup: normalizedPhone,
         currentMonthlySpent: 0,
         spendingPeriod: period,
         active: true,
@@ -359,7 +445,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       await batch.commit()
       setEmail('')
       setEmployeeCode('')
-      onNotice('تم اعتماد الموظف. يمكنه الآن إنشاء حسابه بالبريد الإلكتروني المعتمد.')
+      setEmployeePhone('')
+      onNotice('تم اعتماد الموظف. يمكنه التسجيل بالبريد المعتمد ثم الدخول برقمه الوظيفي أو هاتفه.')
     } catch (error) {
       console.error('Unable to add employee to the approved roster.', error)
       onNotice(firebaseErrorMessage(error))
@@ -431,6 +518,34 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         onNotice(`المحافظة في الصف ${unknownProvince.line} غير موجودة في إعدادات المحافظات.`)
         return
       }
+      for (let offset = 0; offset < rows.length; offset += 30) {
+        const chunk = rows.slice(offset, offset + 30)
+        const codeMatches = await getDocs(query(
+          collection(database, 'employee_roster'),
+          where('employeeCode', 'in', chunk.map((row) => row.employeeCode)),
+        ))
+        const emailsByCode = new Map(chunk.map((row) => [row.employeeCode, row.email]))
+        const duplicateCode = codeMatches.docs.find((item) =>
+          emailsByCode.get(String(item.data().employeeCode)) !== item.id)
+        if (duplicateCode) {
+          onNotice(`الكود الوظيفي ${duplicateCode.data().employeeCode} مرتبط ببريد آخر.`)
+          return
+        }
+        const phoneRows = chunk.filter((row) => row.phone)
+        if (phoneRows.length) {
+          const phoneMatches = await getDocs(query(
+            collection(database, 'employee_roster'),
+            where('phoneLookup', 'in', phoneRows.map((row) => normalizePhone(row.phone ?? ''))),
+          ))
+          const emailsByPhone = new Map(phoneRows.map((row) => [normalizePhone(row.phone ?? ''), row.email]))
+          const duplicatePhone = phoneMatches.docs.find((item) =>
+            emailsByPhone.get(String(item.data().phoneLookup)) !== item.id)
+          if (duplicatePhone) {
+            onNotice(`رقم الهاتف في سجل ${duplicatePhone.id} مرتبط بموظف آخر.`)
+            return
+          }
+        }
+      }
       const period = currentSpendingPeriod()
       for (let offset = 0; offset < rows.length; offset += 25) {
         const batch = writeBatch(database)
@@ -443,6 +558,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         chunk.forEach((row) => batch.set(doc(database, 'employee_roster', row.email), {
           email: row.email,
           employeeCode: row.employeeCode,
+          ...(row.phone ? { phone: row.phone, phoneLookup: normalizePhone(row.phone) } : {}),
           ...(row.name ? { name: row.name } : {}),
           ...(row.providedFields.includes('company') ? { company: row.company || deleteField() } : {}),
           ...(row.branch ? { branch: row.branch } : {}),
@@ -496,77 +612,6 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       onNotice(committedRows
         ? `تم اعتماد ${committedRows.toLocaleString('ar')} موظفاً، ثم توقف الاستيراد بسبب خطأ. راجع الصلاحيات وحاول استيراد الملف مجدداً.`
         : firebaseErrorMessage(error))
-    } finally {
-      setWorking(false)
-    }
-  }
-
-  async function saveEmployeeSpending(entry: EmployeeEntry) {
-    if (!firestore) return
-    const limit = entry.monthlySpendingLimit
-    const spent = entry.currentMonthlySpent ?? 0
-    if ((limit !== undefined && (!Number.isFinite(limit) || limit < 0)) ||
-      !Number.isFinite(spent) || spent < 0 ||
-      (entry.company && !organizationOptions.companies.some((company) => company.name === entry.company))) {
-      onNotice('اختر شركة موجودة أو أزلها، وأدخل سقفاً وإنفاقاً رقمياً غير سالب.')
-      return
-    }
-    setWorking(true)
-    try {
-      const period = currentSpendingPeriod()
-      const rosterRef = doc(firestore, 'employee_roster', entry.email)
-      const profiles = await getDocs(query(collection(firestore, 'employees'), where('email', '==', entry.email)))
-      const batch = writeBatch(firestore)
-      batch.set(rosterRef, {
-        company: entry.company || deleteField(),
-        monthlySpendingLimit: limit === undefined ? deleteField() : limit,
-        currentMonthlySpent: spent,
-        spendingPeriod: period,
-        approvedBy: user.uid,
-        updatedAt: serverTimestamp(),
-      }, { merge: true })
-      profiles.docs.forEach((snapshot) => batch.update(snapshot.ref, {
-        company: entry.company || deleteField(),
-        monthlySpendingLimit: limit === undefined ? deleteField() : limit,
-        currentMonthlySpent: spent,
-        spendingPeriod: period,
-      }))
-      batch.set(doc(firestore, 'employee_sync_queue', entry.email), {
-        email: entry.email,
-        status: 'pending',
-        updatedAt: serverTimestamp(),
-      })
-      await batch.commit()
-      setEditingEmployee(null)
-      onNotice(`تم حفظ بيانات الموظف ${entry.email}.`)
-    } catch (error) {
-      console.error(`Unable to update monthly spending settings for ${entry.email}.`, error)
-      onNotice(firebaseErrorMessage(error))
-    } finally {
-      setWorking(false)
-    }
-  }
-
-  async function toggleEmployee(entry: EmployeeEntry) {
-    if (!firestore) return
-    setWorking(true)
-    try {
-      const batch = writeBatch(firestore)
-      batch.update(doc(firestore, 'employee_roster', entry.email), {
-        active: !entry.active,
-        approvedBy: user.uid,
-        updatedAt: serverTimestamp(),
-      })
-      batch.set(doc(firestore, 'employee_sync_queue', entry.email), {
-        email: entry.email,
-        status: 'pending',
-        updatedAt: serverTimestamp(),
-      })
-      await batch.commit()
-      onNotice(entry.active ? 'تم إيقاف وصول الموظف.' : 'تم تفعيل وصول الموظف.')
-    } catch (error) {
-      console.error(`Unable to update employee access for ${entry.email}.`, error)
-      onNotice(firebaseErrorMessage(error))
     } finally {
       setWorking(false)
     }
@@ -755,7 +800,6 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           <button className={tab === 'products' ? 'current' : ''} onClick={() => setTab('products')}><Package size={16} /> المنتجات والصور</button>
           <button className={tab === 'baskets' ? 'current' : ''} onClick={() => setTab('baskets')}><Archive size={16} /> إدارة السلال</button>
           <button className={tab === 'employees' ? 'current' : ''} onClick={() => setTab('employees')}><Users size={16} /> الموظفون</button>
-          <button className={tab === 'employee-profiles' ? 'current' : ''} onClick={() => setTab('employee-profiles')}><Users size={16} /> الملفات الوظيفية</button>
           <button className={tab === 'organization' ? 'current' : ''} onClick={() => setTab('organization')}><Building2 size={16} /> الشركات والفروع</button>
           <button className={tab === 'settings' ? 'current' : ''} onClick={() => setTab('settings')}><Mail size={16} /> الإشعارات</button>
         </nav>
@@ -766,7 +810,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       {loading && <div className="admin-loading"><LoaderCircle size={19} /> جارٍ تحميل البيانات…</div>}
 
       {!loading && tab === 'orders' && <section className="admin-panel">
-        <div className="admin-panel-heading"><div><h3>طلبات الموظفين</h3><p>تتحدث القائمة تلقائياً عند وصول طلب جديد.</p></div><div className="admin-data-actions"><span>{filteredOrders.length} من {orders.length} طلب</span><button type="button" className="admin-export-button" disabled={exporting || !orders.length} onClick={() => void deliverOrders(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !orders.length} onClick={() => void deliverOrders(true)}><Share2 size={14} /> مشاركة</button><button type="button" className="admin-export-button" disabled={exporting || !orders.some((order) => order.status === 'fulfilled')} onClick={() => void exportCompletedOrders()}><Download size={14} /> تصدير SAP</button><button type="button" className="admin-export-button" disabled={!orders.some((order) => order.status === 'fulfilled')} onClick={printCompletedOrderReport}>طباعة المكتملة</button></div></div>
+        <div className="admin-panel-heading"><div><h3>طلبات الموظفين</h3><p>تتحدث القائمة تلقائياً عند وصول طلب جديد.</p></div><div className="admin-data-actions"><span>{filteredOrders.length} من {orders.length} طلب</span><button type="button" className="admin-export-button" disabled={exporting || !orders.length} onClick={() => void deliverOrders(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !orders.length} onClick={() => void deliverOrders(true)}><Share2 size={14} /> مشاركة</button><button type="button" className="admin-export-button" disabled={exporting || !orders.some((order) => order.status === 'fulfilled')} onClick={() => void exportCompletedOrders()}><Download size={14} /> تصدير SAP</button><button type="button" className="admin-export-button" disabled={!orders.length} onClick={printCompletedOrderReport}>طباعة التقرير الكامل</button></div></div>
         <label className="admin-search"><Search size={16} /><input type="search" value={orderSearch} onChange={(event) => setOrderSearch(event.target.value)} placeholder="ابحث برقم الطلب أو اسم الموظف أو بريده أو كوده..." aria-label="البحث في طلبات الموظفين" /></label>
         {orders.length === 0 ? <div className="admin-empty"><ClipboardList size={33} /><strong>لا توجد طلبات حتى الآن</strong><small>تظهر الطلبات الجديدة هنا عند تأكيد الموظفين لها.</small></div> :
           filteredOrders.length === 0 ? <div className="admin-empty"><Search size={30} /><strong>لا توجد نتائج مطابقة</strong><small>جرّب البحث برقم الطلب أو بيانات الموظف.</small></div> :
@@ -780,11 +824,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
             {order.excluded.length > 0 && <small className="admin-exclusions">مستبعد: {order.excluded.map((id) => order.itemDetails[id]?.name ?? products.find((item) => item.id === id)?.name ?? id).join('، ')}</small>}
             <div className="admin-order-actions">
               <label>حالة الطلب <select value={order.status} disabled={working || order.status === 'deleted'} onChange={(event) => void setOrderStatus(order, event.target.value as OrderStatus)}>{Object.entries(orderStatusLabels).filter(([value]) => value !== 'deleted').map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-              {order.status !== 'deleted' && <button type="button" className="admin-delete-order" disabled={working} onClick={() => {
-                if (window.confirm(`سيتم تعليم الطلب ${order.reference} كمحذوف في لوحة المشرف وGoogle Sheets. هل تريد المتابعة؟`)) {
-                  void setOrderStatus(order, 'deleted')
-                }
-              }}><Trash2 size={14} /> حذف الطلب</button>}
+              <button type="button" className="admin-delete-order" disabled={working} onClick={() => void permanentlyDeleteOrder(order)}><Trash2 size={14} /> حذف نهائي</button>
               {order.status !== 'deleted' && <a href={`https://wa.me/${order.profile.whatsapp.replace(/\D/g, '')}?text=${encodeURIComponent(`مرحباً ${order.profile.name}، تحديث طلبك ${order.reference}: ${orderStatusLabels[order.status]}.`)}`} target="_blank" rel="noreferrer">إشعار الموظف عبر واتساب</a>}
             </div>
           </article>)}</div>}
@@ -825,10 +865,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       </section>}
 
       {!loading && tab === 'baskets' && <AdminBasketManagement products={products} onNotice={onNotice} userId={user.uid} />}
-      {!loading && tab === 'employee-profiles' && <AdminEmployeeProfiles user={user} organizationOptions={organizationOptions} onNotice={onNotice} />}
-
       {!loading && tab === 'employees' && <section className="admin-panel">
-        <div className="admin-panel-heading"><div><h3>اعتماد حسابات الموظفين</h3><p>اعتمد قائمة الموظفين دفعة واحدة، أو أضف موظفاً بشكل منفرد.</p></div><span>{employees.filter((employee) => employee.active).length} معتمد</span></div>
+        <div className="admin-panel-heading"><div><h3>إدارة الموظفين</h3><p>أضف الموظفين أو استورد بياناتهم، ثم افتح سجل الموظف لتعديل ملفه أو صلاحية الدخول.</p></div><span>{employees.filter((employee) => employee.active).length} نشط</span></div>
         <div className="employee-bulk-import">
           <div className="employee-bulk-heading"><div><strong>استيراد قائمة الموظفين</strong><small>ارفع ملف CSV من الموارد البشرية؛ تُحفظ القائمة على دفعات آمنة.</small></div><button className="roster-template-button" type="button" onClick={downloadRosterTemplate}><Download size={14} /> تنزيل قالب CSV</button></div>
           <div className="employee-bulk-controls">
@@ -849,61 +887,11 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         <form className="employee-approval-form" onSubmit={(event) => void saveEmployee(event)}>
           <label className="field"><span>بريد الموظف الإلكتروني</span><input required type="email" dir="ltr" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="employee@company.com" /></label>
           <label className="field"><span>الكود الوظيفي</span><input required value={employeeCode} onChange={(event) => setEmployeeCode(event.target.value)} placeholder="مثال: 10482" /></label>
+          <label className="field"><span>رقم الهاتف مع رمز الدولة</span><input required type="tel" dir="ltr" value={employeePhone} onChange={(event) => setEmployeePhone(event.target.value)} placeholder="+967 7XX XXX XXX" /></label>
           <button className="admin-add-button" disabled={working}><Plus size={15} /> اعتماد الموظف</button>
         </form>
-        <div className="admin-roster-toolbar"><label className="admin-search"><Search size={16} /><input type="search" value={employeeSearch} onChange={(event) => setEmployeeSearch(event.target.value)} placeholder="ابحث بالبريد الإلكتروني أو الكود الوظيفي..." aria-label="البحث عن الموظفين المعتمدين" /></label><div className="admin-data-actions"><span>{filteredEmployees.length} من {employees.length} موظف</span><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(true)}><Share2 size={14} /> مشاركة</button></div></div>
-        <div className="roster-list">{filteredEmployees.length ? filteredEmployees.map((entry) => <div className="roster-row roster-row-compact" key={entry.email}>
-          <span className={`roster-state${entry.active ? ' active' : ''}`}><Check size={13} /></span>
-          <div className="roster-identity">
-            <strong dir="ltr">{entry.email}</strong><small>الكود الوظيفي: {entry.employeeCode}</small>
-          </div>
-          <div className="roster-row-actions">
-            <button type="button" disabled={working} onClick={() => {
-              setEditingEmployee(entry)
-              setEmployeeEditDraft({
-                company: entry.company ?? '',
-                monthlySpendingLimit: entry.monthlySpendingLimit === undefined ? '' : String(entry.monthlySpendingLimit),
-                currentMonthlySpent: String(
-                  entry.spendingPeriod === currentSpendingPeriod() ? entry.currentMonthlySpent ?? 0 : 0,
-                ),
-              })
-            }}><Edit3 size={14} /> تعديل</button>
-            <button type="button" disabled={working} className={entry.active ? 'deactivate-button' : 'activate-button'} onClick={() => void toggleEmployee(entry)}>{entry.active ? 'إيقاف' : 'تفعيل'}</button>
-          </div>
-        </div>) : <div className="admin-empty"><Search size={26} /><strong>{employees.length ? 'لا توجد نتائج مطابقة' : 'لا يوجد موظفون معتمدون بعد'}</strong></div>}</div>
-        {editingEmployee && <div className="admin-modal-backdrop" onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !working) setEditingEmployee(null)
-        }}>
-          <form className="admin-employee-form" onSubmit={(event) => {
-            event.preventDefault()
-            const limitText = employeeEditDraft.monthlySpendingLimit.trim()
-            const spentText = employeeEditDraft.currentMonthlySpent.trim()
-            const limit = limitText ? Number(limitText) : undefined
-            const spent = Number(spentText)
-            if ((limit !== undefined && (!Number.isFinite(limit) || limit < 0 || limit > 1_000_000_000)) ||
-              !Number.isFinite(spent) || spent < 0 || spent > 1_000_000_000) {
-              onNotice('يجب أن يكون السقف والإنفاق أرقاماً غير سالبة ضمن الحد المسموح.')
-              return
-            }
-            void saveEmployeeSpending({
-              ...editingEmployee,
-              company: employeeEditDraft.company,
-              monthlySpendingLimit: limit,
-              currentMonthlySpent: spent,
-            })
-          }}>
-            <div className="admin-form-heading"><div><h3>تعديل بيانات الموظف</h3><p dir="ltr">{editingEmployee.email}</p></div>
-              <button type="button" className="admin-close-button" aria-label="إغلاق" onClick={() => setEditingEmployee(null)}><X size={17} /></button>
-            </div>
-            <label className="field"><span>الشركة</span><select value={employeeEditDraft.company} onChange={(event) => setEmployeeEditDraft((current) => ({ ...current, company: event.target.value }))}>
-              <option value="">بدون شركة</option>{organizationOptions.companies.map((company) => <option key={company.name} value={company.name}>{company.name}</option>)}
-            </select></label>
-            <label className="field"><span>السقف الشهري (ر.ي) — فارغ لإزالته</span><input type="number" min="0" max="1000000000" step="1" value={employeeEditDraft.monthlySpendingLimit} onChange={(event) => setEmployeeEditDraft((current) => ({ ...current, monthlySpendingLimit: event.target.value }))} /></label>
-            <label className="field"><span>الإنفاق الحالي للشهر (ر.ي)</span><input required type="number" min="0" max="1000000000" step="1" value={employeeEditDraft.currentMonthlySpent} onChange={(event) => setEmployeeEditDraft((current) => ({ ...current, currentMonthlySpent: event.target.value }))} /></label>
-            <p className="admin-employee-period">فترة الإنفاق: {currentSpendingPeriod()}. إن كانت بيانات الموظف من شهر سابق فسيبدأ إنفاقه الحالي من صفر.</p>
-            <div className="admin-form-actions"><button className="admin-add-button" disabled={working}><Check size={14} /> حفظ التعديلات</button><button type="button" className="admin-export-button" disabled={working} onClick={() => setEditingEmployee(null)}>إلغاء</button></div>
-          </form>
-        </div>}
+        <div className="admin-roster-toolbar"><div className="admin-data-actions"><span>{employees.length} موظف</span><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(true)}><Share2 size={14} /> مشاركة</button></div></div>
+        <AdminEmployeeProfiles user={user} organizationOptions={organizationOptions} onNotice={onNotice} />
       </section>}
 
       {!loading && tab === 'settings' && <AdminIntegrationSettings user={user} onNotice={onNotice} />}

@@ -9,14 +9,19 @@ const DEFAULT_RECIPIENT = 'Moath.khaled.h@gmail.com';
 const DEFAULT_FIREBASE_PROJECT_ID = 'natco-edabc';
 const EMPLOYEE_SHEET_NAME = 'سجل الموظفين';
 const PRODUCT_SHEET_NAME = 'كتالوج المنتجات';
+const ORDER_ITEM_SHEET_NAME = 'تفاصيل الطلبات';
+const SUMMARY_SHEET_NAME = 'ملخص';
+const SYNC_LOG_SHEET_NAME = 'سجل المزامنة';
+const SHEET_SCHEMA_VERSION = '3';
 const EMPLOYEE_HEADERS = [
   'اسم الموظف', 'البريد الإلكتروني', 'الرقم الوظيفي', 'الشركة/الشركة التابعة',
   'الفرع', 'المحافظة', 'السقف الشهري المعتمد', 'الإنفاق الشهري الحالي', 'حالة الحساب',
-  'فترة الإنفاق', 'بصمة المزامنة',
+  'فترة الإنفاق', 'العنوان', 'الهاتف', 'واتساب', 'بصمة المزامنة',
 ];
 const PRODUCT_HEADERS = [
   'معرّف المنتج', 'اسم المنتج', 'الوصف', 'القسم الرئيسي', 'التصنيف الفرعي',
   'نوع السلة', 'سعر الوكيل الأساسي (ر.ي)', 'أسعار الشركات (JSON)', 'حالة العرض', 'الصورة متوفرة',
+  'بصمة المزامنة',
 ];
 const LEGACY_ORDER_HEADERS = [
   'معرف الطلب', 'رقم الطلب', 'تاريخ الطلب', 'الحالة', 'اسم الموظف',
@@ -29,9 +34,29 @@ const ORDER_HEADERS = [
   'الكود الوظيفي', 'البريد الإلكتروني', 'الشركة', 'الفرع', 'الهاتف',
   'واتساب', 'العنوان', 'فرع الاستلام', 'السلة الأساسية', 'السلة العائلية',
   'الأصناف والكميات', 'الأصناف المستبعدة', 'الإجمالي (ر.ي)', 'العملة',
+  'نوع الحركة', 'عدد التعديلات', 'آخر تحديث',
+];
+const ORDER_ITEM_HEADERS = [
+  'معرّف الطلب', 'رقم الطلب', 'تاريخ الطلب', 'حالة الطلب', 'اسم المنتج',
+  'معرّف المنتج', 'الكمية', 'سعر الوحدة (ر.ي)', 'الإجمالي (ر.ي)',
+];
+const SYNC_LOG_HEADERS = ['وقت العملية', 'الاتجاه', 'نوع البيانات', 'المعرّف', 'النتيجة'];
+const ORDER_STATUS_OPTIONS = [
+  'وصل الطلب (RECEIVED)', 'قيد التجهيز (PREPARING)', 'جاهز للصرف (READY)',
+  'تم التسليم (FULFILLED)', 'ملغي (CANCELLED)', 'محذوف (DELETED)',
 ];
 
 function initializeNatcoIntegration() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) throw new Error('تعذر بدء التهيئة لأن عملية مزامنة أخرى ما زالت تعمل بعد الانتظار. أعد المحاولة بعد انتهائها.');
+  try {
+    initializeNatcoIntegration_();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function initializeNatcoIntegration_() {
   const projectId = PropertiesService.getScriptProperties().getProperty('FIREBASE_PROJECT_ID')
     || DEFAULT_FIREBASE_PROJECT_ID;
   if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(projectId)) {
@@ -70,18 +95,51 @@ function initializeNatcoIntegration() {
   PropertiesService.getScriptProperties().deleteProperty('INITIAL_SHEET_URL');
   const spreadsheetId = spreadsheetIdFromUrl_(spreadsheetUrl);
   const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  rebuildNatcoSheetsIfNeeded_(spreadsheet);
   ensureEmployeeSheet_(spreadsheet);
   ensureCatalogSheet_(spreadsheet);
+  ensureOrderItemSheet_(spreadsheet);
+  ensureSyncLogSheet_(spreadsheet);
+  ensureSummarySheet_(spreadsheet);
+  ensureOrderSheet_(spreadsheet);
+  removeDuplicateDataRows_(spreadsheet);
   ensureQueueTrigger_();
-  ensureEmployeeEditTrigger_(spreadsheetId);
-  syncAllNatcoEmployees(true);
+  ensureSpreadsheetEditTrigger_(spreadsheetId);
+  syncAllNatcoEmployees(false);
   initializeEmployeeSpendingPeriod_();
   syncAllNatcoProducts();
+  syncAllNatcoOrders();
   syncDeletedNatcoOrdersNow();
 
   console.log(
     'تم تجهيز Google Sheets ومزامنة الطلبات كل دقيقة تقريباً. رابط الجدول: ' + spreadsheetUrl,
   );
+}
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('إدارة ناتكو')
+    .addItem('مزامنة كاملة مع التطبيق', 'syncAllNatcoData')
+    .addToUi();
+}
+
+function syncAllNatcoData() {
+  const settings = getSettingsDocument_();
+  const spreadsheetId = settings && spreadsheetIdFromUrl_(settings.spreadsheetUrl);
+  if (!spreadsheetId) throw new Error('احفظ رابط Google Sheets من لوحة المشرف قبل المزامنة.');
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) throw new Error('تعذر بدء المزامنة لأن عملية أخرى ما زالت تعمل بعد الانتظار. أعد المحاولة بعد انتهائها.');
+  try {
+    removeDuplicateDataRows_(SpreadsheetApp.openById(spreadsheetId));
+    syncEmployeesFromSheet_(spreadsheetId);
+    syncCatalogFromSheet_(spreadsheetId);
+    syncAllNatcoEmployees(false);
+    syncAllNatcoProducts();
+    syncAllNatcoOrders();
+    console.log('اكتملت المزامنة الشاملة بين Google Sheets والتطبيق.');
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function processNatcoOrderQueue() {
@@ -141,6 +199,7 @@ function processNatcoOrderQueue() {
     syncEmployeesFromSheet_(spreadsheetId);
     processEmployeeSyncQueue_(spreadsheetId);
     processCatalogSyncQueue_(spreadsheetId);
+    syncCatalogFromSheet_(spreadsheetId);
     rolloverEmployeeSpending_(spreadsheetId);
     syncEmployeesFromSheet_(spreadsheetId);
   } finally {
@@ -186,6 +245,16 @@ function deliverOrder_(queueDocument, recipients, spreadsheetId) {
   const attempts = Number(queue.attempts || 0) + 1;
 
   try {
+    if (queue.eventStatus === 'deleted') {
+      deleteOrderRows_(queueId, spreadsheetId);
+      patchDocument_(NOTIFICATION_COLLECTION, queueId, {
+        status: 'delivered',
+        deletedAt: new Date(),
+        lastError: '',
+      });
+      logSync_('التطبيق → Google Sheets', 'طلب محذوف نهائياً', queueId, 'حُذفت صفوف الطلب');
+      return;
+    }
     patchDocument_(NOTIFICATION_COLLECTION, queueId, {
       attempts: attempts,
       lastError: '',
@@ -215,6 +284,7 @@ function deliverOrder_(queueDocument, recipients, spreadsheetId) {
         sheetRow: sheetRow,
         sheetWrittenAt: new Date(),
       });
+      logSync_('التطبيق → Google Sheets', 'طلب', queueId, 'تمت المزامنة');
     } catch (sheetError) {
       const message = sheetError instanceof Error ? sheetError.message : String(sheetError);
       deliveryErrors.push('Google Sheets: ' + message);
@@ -276,17 +346,100 @@ function syncDeletedNatcoOrdersNow() {
   console.log('تمت مزامنة ' + count + ' طلباً محذوفاً كسجلات حمراء في Google Sheets.');
 }
 
+function syncAllNatcoOrders() {
+  const settings = getSettingsDocument_();
+  const spreadsheetId = settings && spreadsheetIdFromUrl_(settings.spreadsheetUrl);
+  if (!spreadsheetId) throw new Error('احفظ رابط Google Sheets من لوحة المشرف قبل مزامنة الطلبات.');
+  const response = firestoreRequest_('post', ':runQuery', {
+    structuredQuery: {
+      from: [{ collectionId: 'orders' }],
+      limit: 1000,
+    },
+  });
+  let count = 0;
+  (response || []).forEach(function (entry) {
+    if (entry.error) throw new Error('Orders query failed: ' + JSON.stringify(entry.error).slice(0, 300));
+    if (!entry.document) return;
+    const orderId = entry.document.name.split('/').pop();
+    syncOrderRow_(orderId, decodeFields_(entry.document.fields || {}), spreadsheetId);
+    count += 1;
+  });
+  console.log('تمت مزامنة ' + count + ' طلباً في Google Sheets.');
+}
+
 function syncOrderRow_(orderId, order, spreadsheetId) {
   const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
-  const sheet = spreadsheet.getSheetByName('طلبات الموظفين') || spreadsheet.getSheets()[0];
-  ensureSheetHeaders_(sheet);
+  const sheet = ensureOrderSheet_(spreadsheet);
   const existingRow = findOrderRow_(sheet, orderId);
   const values = orderSheetRow_(orderId, order);
   const row = existingRow || sheet.getLastRow() + 1;
   sheet.getRange(row, 1, 1, values.length).setValues([values]);
   sheet.getRange(row, 1, 1, ORDER_HEADERS.length)
     .setBackgrounds([Array(ORDER_HEADERS.length).fill(orderStatusColor_(order.status))]);
+  const itemSheet = ensureOrderItemSheet_(spreadsheet);
+  syncOrderItemRows_(itemSheet, orderId, order);
   return row;
+}
+
+function syncOrderItemRows_(sheet, orderId, order) {
+  const items = order.items && typeof order.items === 'object' ? order.items : {};
+  const details = order.itemDetails && typeof order.itemDetails === 'object' ? order.itemDetails : {};
+  const wanted = {};
+  Object.keys(items).forEach(function (productId) {
+    const quantity = Number(items[productId]);
+    if (!Number.isInteger(quantity) || quantity <= 0) return;
+    const detail = details[productId] || {};
+    wanted[productId] = [
+      orderId,
+      order.reference || '',
+      order.createdAt instanceof Date ? order.createdAt : '',
+      orderStatus_(order.status),
+      detail.name || productId,
+      productId,
+      quantity,
+      typeof detail.agentPrice === 'number' ? detail.agentPrice : '',
+      typeof detail.agentPrice === 'number' ? detail.agentPrice * quantity : '',
+    ].map(safeSheetValue_);
+  });
+
+  const existing = {};
+  const duplicates = [];
+  if (sheet.getLastRow() >= 2) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues().forEach(function (row, index) {
+      if (String(row[0]) !== String(orderId)) return;
+      const productId = String(row[5]);
+      if (existing[productId]) duplicates.push(index + 2);
+      else existing[productId] = index + 2;
+    });
+  }
+  duplicates.sort(function (left, right) { return right - left; })
+    .forEach(function (row) { sheet.deleteRow(row); });
+  Object.keys(wanted).forEach(function (productId) {
+    const row = existing[productId] || sheet.getLastRow() + 1;
+    sheet.getRange(row, 1, 1, ORDER_ITEM_HEADERS.length).setValues([wanted[productId]]);
+    sheet.getRange(row, 1, 1, ORDER_ITEM_HEADERS.length)
+      .setBackground(orderStatusColor_(order.status));
+    delete existing[productId];
+  });
+  Object.keys(existing).map(function (productId) { return existing[productId]; })
+    .sort(function (left, right) { return right - left; })
+    .forEach(function (row) { sheet.deleteRow(row); });
+}
+
+function deleteOrderRows_(orderId, spreadsheetId) {
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  const orderSheet = ensureOrderSheet_(spreadsheet);
+  const orderRow = findOrderRow_(orderSheet, orderId);
+  if (orderRow) orderSheet.deleteRow(orderRow);
+
+  const itemSheet = ensureOrderItemSheet_(spreadsheet);
+  if (itemSheet.getLastRow() < 2) return;
+  const rows = itemSheet.getRange(2, 1, itemSheet.getLastRow() - 1, 1).getDisplayValues();
+  rows.map(function (row, index) {
+    return String(row[0]) === orderId ? index + 2 : 0;
+  }).filter(function (row) { return row > 0; })
+    .sort(function (left, right) { return right - left; })
+    .forEach(function (row) { itemSheet.deleteRow(row); });
 }
 
 function processEmployeeSyncQueue_(spreadsheetId) {
@@ -322,6 +475,7 @@ function processEmployeeSyncQueue_(spreadsheetId) {
         syncedAt: new Date(),
         lastError: '',
       });
+      logSync_('التطبيق → Google Sheets', 'موظف', queue.email || queueId, 'تمت المزامنة');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('Employee sheet synchronization failed for ' + queueId + '.', error);
@@ -364,6 +518,7 @@ function processCatalogSyncQueue_(spreadsheetId) {
         syncedAt: new Date(),
         lastError: '',
       });
+      logSync_('التطبيق → Google Sheets', 'منتج', queue.productId || queueId, 'تمت المزامنة');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('Catalog sheet synchronization failed for ' + queueId + '.', error);
@@ -420,6 +575,7 @@ function syncCatalogProductRow_(productId, spreadsheetId, suppliedProduct, exist
     product.active === false ? 'مخفي' : 'نشط',
     product.imageUrl ? 'نعم' : 'لا',
   ].map(safeSheetValue_);
+  values.push(productRowFingerprint_(values));
   const row = existingRow || sheet.getLastRow() + 1;
   sheet.getRange(row, 1, 1, PRODUCT_HEADERS.length).setValues([values]);
   sheet.getRange(row, 1, 1, PRODUCT_HEADERS.length)
@@ -428,11 +584,112 @@ function syncCatalogProductRow_(productId, spreadsheetId, suppliedProduct, exist
 
 function findCatalogProductRow_(sheet, productId) {
   if (sheet.getLastRow() < 2) return 0;
-  const match = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1)
-    .createTextFinder(String(productId))
-    .matchEntireCell(true)
-    .findNext();
-  return match ? match.getRow() : 0;
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues();
+  return keepFirstMatchingRow_(sheet, rows, String(productId));
+}
+
+function syncCatalogFromSheet_(spreadsheetId) {
+  const sheet = ensureCatalogSheet_(SpreadsheetApp.openById(spreadsheetId));
+  if (sheet.getLastRow() < 2) return;
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, PRODUCT_HEADERS.length).getValues();
+  let imported = 0;
+  rows.forEach(function (row, index) {
+    const productId = String(row[0] || '').trim();
+    if (!productId || productRowFingerprint_(row) === String(row[10] || '')) return;
+    try {
+      importCatalogSheetRow_(sheet, index + 2);
+      imported += 1;
+    } catch (error) {
+      sheet.getRange(index + 2, 1, 1, PRODUCT_HEADERS.length).setBackground('#fce4e4');
+      logSync_('Google Sheets ← التطبيق', 'منتج', productId,
+        'فشل: ' + errorMessage_(error));
+      console.error('Unable to synchronize product row ' + (index + 2) + '.', error);
+    }
+  });
+  if (imported) console.log('تمت مزامنة ' + imported + ' تعديلات أسعار من Google Sheets.');
+}
+
+function handleCatalogSheetEdit(event) {
+  if (!event || !event.range || event.range.getRow() < 2) return;
+  const sheet = event.range.getSheet();
+  if (sheet.getName() !== PRODUCT_SHEET_NAME) return;
+  const firstColumn = event.range.getColumn();
+  const lastColumn = firstColumn + event.range.getNumColumns() - 1;
+  const editsEditableField = firstColumn <= 9 && lastColumn >= 7;
+  for (let offset = 0; offset < event.range.getNumRows(); offset += 1) {
+    const rowNumber = event.range.getRow() + offset;
+    const productId = String(sheet.getRange(rowNumber, 1).getValue() || '').trim();
+    if (!productId) continue;
+    try {
+      if (editsEditableField) importCatalogSheetRow_(sheet, rowNumber);
+      else syncCatalogProductRow_(productId, '', null, sheet);
+      logSync_('Google Sheets → التطبيق', 'منتج', productId, 'تمت المزامنة');
+    } catch (error) {
+      syncCatalogProductRow_(productId, '', null, sheet);
+      sheet.getRange(rowNumber, 1, 1, PRODUCT_HEADERS.length).setBackground('#fce4e4');
+      logSync_('Google Sheets → التطبيق', 'منتج', productId,
+        'فشل: ' + errorMessage_(error));
+      console.error('Unable to import catalog row ' + rowNumber + '.', error);
+    }
+  }
+}
+
+function importCatalogSheetRow_(sheet, rowNumber) {
+  const row = sheet.getRange(rowNumber, 1, 1, PRODUCT_HEADERS.length).getValues()[0];
+  const productId = String(row[0] || '').trim();
+  const product = getDocument_('products', productId);
+  if (!product) throw new Error('المنتج غير موجود في التطبيق.');
+  const price = row[6] === '' || row[6] === null ? null : Number(row[6]);
+  if (price !== null && (!Number.isFinite(price) || price < 0 || price > 1000000000)) {
+    throw new Error('سعر الوكيل يجب أن يكون رقماً بين صفر ومليار.');
+  }
+  let companyPrices = {};
+  const companyPricesText = String(row[7] || '').trim();
+  if (companyPricesText) {
+    try {
+      companyPrices = JSON.parse(companyPricesText);
+    } catch (error) {
+      throw new Error('صيغة أسعار الشركات JSON غير صحيحة.');
+    }
+    if (!companyPrices || typeof companyPrices !== 'object' || Array.isArray(companyPrices) ||
+      Object.keys(companyPrices).length > 50 ||
+      Object.keys(companyPrices).some(function (company) {
+        const value = companyPrices[company];
+        return !company || company.length > 80 || typeof value !== 'number' ||
+          !Number.isFinite(value) || value < 0 || value > 1000000000;
+      })) {
+      throw new Error('تحقق من أن أسعار الشركات أرقام صحيحة غير سالبة.');
+    }
+  }
+  const statusText = String(row[8] || '').trim().toLowerCase();
+  const active = ['نشط', 'active', 'true', '1'].indexOf(statusText) >= 0;
+  const inactive = ['مخفي', 'غير نشط', 'inactive', 'false', '0'].indexOf(statusText) >= 0;
+  if (!active && !inactive) throw new Error('حالة العرض يجب أن تكون «نشط» أو «مخفي».');
+  const fields = {
+    companyAgentPrices: companyPrices,
+    active: active,
+    updatedAt: new Date(),
+  };
+  const fieldPaths = ['companyAgentPrices', 'active', 'updatedAt'];
+  if (price !== null) {
+    fields.agentPrice = price;
+    fieldPaths.push('agentPrice');
+  }
+  patchDocumentFields_('products', productId, fields, fieldPaths);
+  syncCatalogProductRow_(productId, '', null, sheet);
+}
+
+function productRowFingerprint_(values) {
+  const editableValues = [values[6], values[7], values[8]].map(function (value) {
+    return value instanceof Date ? value.toISOString() : value;
+  });
+  return digestFingerprint_(JSON.stringify(editableValues));
+}
+
+function digestFingerprint_(data) {
+  return Utilities.base64EncodeWebSafe(
+    Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, data),
+  ).replace(/=+$/, '');
 }
 
 function syncAllNatcoEmployees(preserveExistingRows) {
@@ -466,8 +723,38 @@ function syncEmployeeRow_(email, spreadsheetId, existingSheet, preserveExistingR
   const spreadsheet = existingSheet ? null : SpreadsheetApp.openById(spreadsheetId);
   const sheet = existingSheet || ensureEmployeeSheet_(spreadsheet);
   const profile = findEmployeeProfile_(normalizedEmail);
+  const profileMirror = {};
+  ['name', 'address', 'phone', 'whatsapp'].forEach(function (field) {
+    if (typeof profile[field] === 'string' && profile[field] !== String(roster[field] || '')) {
+      profileMirror[field] = profile[field];
+      roster[field] = profile[field];
+    }
+  });
+  const phoneLookup = String(roster.phone || profile.phone || '').replace(/\D/g, '');
+  if (phoneLookup.length >= 8 && phoneLookup.length <= 18) {
+    if (phoneLookup !== String(roster.phoneLookup || '')) {
+      const phoneOwners = findEmployeeEmailsByField_('phoneLookup', phoneLookup, 1000);
+      const conflicts = phoneOwners.filter(function (ownerEmail) { return ownerEmail !== normalizedEmail; });
+      if (conflicts.length) {
+        Array.from(new Set(phoneOwners.concat([normalizedEmail]))).forEach(function (ownerEmail) {
+          patchDocumentFields_(EMPLOYEE_ROSTER_COLLECTION, ownerEmail, {}, ['phoneLookup']);
+        });
+        delete roster.phoneLookup;
+      } else {
+        profileMirror.phoneLookup = phoneLookup;
+        roster.phoneLookup = phoneLookup;
+      }
+    }
+  } else if (roster.phoneLookup) {
+    delete roster.phoneLookup;
+    patchDocumentFields_(EMPLOYEE_ROSTER_COLLECTION, normalizedEmail, {}, ['phoneLookup']);
+  }
+  if (Object.keys(profileMirror).length) {
+    patchDocumentFields_(EMPLOYEE_ROSTER_COLLECTION, normalizedEmail,
+      profileMirror, Object.keys(profileMirror));
+  }
   const values = [
-    profile.name || roster.name || '',
+    roster.name || profile.name || '',
     normalizedEmail,
     roster.employeeCode || '',
     roster.company || '',
@@ -477,6 +764,9 @@ function syncEmployeeRow_(email, spreadsheetId, existingSheet, preserveExistingR
     typeof roster.currentMonthlySpent === 'number' ? roster.currentMonthlySpent : 0,
     roster.active === true ? 'نشط' : 'موقوف',
     roster.spendingPeriod || '',
+    roster.address || profile.address || '',
+    roster.phone || profile.phone || '',
+    roster.whatsapp || profile.whatsapp || '',
   ].map(safeSheetValue_);
   values.push(employeeRowFingerprint_(values));
   const row = findEmployeeRow_(sheet, normalizedEmail);
@@ -511,17 +801,344 @@ function handleEmployeeSheetEdit(event) {
   if (!event || !event.range) return;
   const sheet = event.range.getSheet();
   if (sheet.getName() !== EMPLOYEE_SHEET_NAME || event.range.getRow() < 2) return;
-  ensureEmployeeHeaders_(sheet);
+  if (!ensureEmployeeHeaders_(sheet)) {
+    ensureEmployeeSheet_(sheet.getParent());
+    syncAllNatcoEmployees(false);
+    return;
+  }
   const firstRow = event.range.getRow();
   const rowCount = event.range.getNumRows();
+  const firstColumn = event.range.getColumn();
+  const lastColumn = firstColumn + event.range.getNumColumns() - 1;
+  const changedColumns = [];
+  for (let column = firstColumn; column <= lastColumn; column += 1) changedColumns.push(column);
+  const editableColumns = [1, 3, 4, 5, 6, 7, 9, 11, 12, 13];
+  const onlyEditableColumns = changedColumns.every(function (column) {
+    return editableColumns.indexOf(column) >= 0;
+  });
   for (let offset = 0; offset < rowCount; offset += 1) {
+    const rowNumber = firstRow + offset;
+    let email = String(sheet.getRange(rowNumber, 2).getValue() || '').trim().toLowerCase();
     try {
-      importEmployeeSheetRow_(sheet, firstRow + offset);
+      if (changedColumns.indexOf(2) >= 0) {
+        const employeeCode = String(sheet.getRange(rowNumber, 3).getValue() || '').trim();
+        email = typeof event.oldValue === 'string' && event.range.getNumRows() === 1
+          ? event.oldValue.trim().toLowerCase()
+          : findEmployeeEmailByCode_(employeeCode);
+        if (!email) throw new Error('لا يمكن تغيير البريد الإلكتروني من الجدول.');
+        sheet.getRange(rowNumber, 1, 1, EMPLOYEE_HEADERS.length).clearContent();
+        syncEmployeeRow_(email, '', sheet);
+        throw new Error('البريد الإلكتروني معرّف ثابت ولا يمكن تغييره من الجدول.');
+      }
+      if (!onlyEditableColumns) {
+        if (email) syncEmployeeRow_(email, '', sheet);
+        throw new Error('هذا العمود للعرض فقط؛ لم تُحفظ التغييرات عليه.');
+      }
+      importEmployeeSheetRow_(sheet, rowNumber);
+      logSync_('Google Sheets → التطبيق', 'موظف', email, 'تمت المزامنة');
     } catch (error) {
-      console.error('Unable to import edited employee row ' + (firstRow + offset) + '.', error);
-      sheet.getRange(firstRow + offset, 1, 1, EMPLOYEE_HEADERS.length).setBackground('#fce4e4');
-      throw error;
+      console.error('Unable to import edited employee row ' + rowNumber + '.', error);
+      const visibleEmail = String(sheet.getRange(rowNumber, 2).getValue() || '').trim().toLowerCase();
+      if (visibleEmail && visibleEmail !== email) syncEmployeeRow_(visibleEmail, '', sheet);
+      else if (email) syncEmployeeRow_(email, '', sheet);
+      sheet.getRange(rowNumber, 1, 1, EMPLOYEE_HEADERS.length).setBackground('#fce4e4');
+      logSync_('Google Sheets → التطبيق', 'موظف', email, 'فشل: ' + errorMessage_(error));
     }
+  }
+}
+
+function findEmployeeEmailByCode_(employeeCode) {
+  if (!employeeCode) return '';
+  const emails = findEmployeeEmailsByField_('employeeCode', employeeCode);
+  return emails.length === 1 ? emails[0] : '';
+}
+
+function findEmployeeEmailsByField_(fieldPath, value, resultLimit) {
+  if (!fieldPath || !value) return [];
+  const response = firestoreRequest_('post', ':runQuery', {
+    structuredQuery: {
+      from: [{ collectionId: EMPLOYEE_ROSTER_COLLECTION }],
+      where: {
+        fieldFilter: {
+          field: { fieldPath: fieldPath },
+          op: 'EQUAL',
+          value: { stringValue: String(value) },
+        },
+      },
+      limit: resultLimit || 2,
+    },
+  });
+  const documents = (response || []).filter(function (entry) { return entry.document; });
+  return documents.map(function (entry) {
+    return entry.document.name.split('/').pop();
+  });
+}
+
+function handleNatcoSheetEdit(event) {
+  if (!event || !event.range) return;
+  const name = event.range.getSheet().getName();
+  if (name === EMPLOYEE_SHEET_NAME) handleEmployeeSheetEdit(event);
+  else if (name === PRODUCT_SHEET_NAME) handleCatalogSheetEdit(event);
+  else if (name === 'طلبات الموظفين') handleOrderSheetEdit(event);
+  else if (name === ORDER_ITEM_SHEET_NAME) handleOrderItemSheetEdit(event);
+}
+
+function handleOrderSheetEdit(event) {
+  if (!event || !event.range || event.range.getRow() < 2) return;
+  const sheet = event.range.getSheet();
+  const firstRow = event.range.getRow();
+  for (let offset = 0; offset < event.range.getNumRows(); offset += 1) {
+    const rowNumber = firstRow + offset;
+    const orderId = String(sheet.getRange(rowNumber, 1).getValue() || '').trim();
+    if (!orderId) continue;
+    try {
+      if (event.range.getColumn() <= 4 &&
+        event.range.getColumn() + event.range.getNumColumns() - 1 >= 4) {
+        updateOrderStatusFromSheet_(orderId, sheet.getRange(rowNumber, 4).getValue());
+      } else {
+        syncOrderRowFromFirestore_(orderId);
+      }
+      logSync_('Google Sheets → التطبيق', 'طلب', orderId, 'تمت المزامنة');
+    } catch (error) {
+      syncOrderRowFromFirestore_(orderId);
+      sheet.getRange(rowNumber, 1, 1, ORDER_HEADERS.length).setBackground('#fce4e4');
+      logSync_('Google Sheets → التطبيق', 'طلب', orderId, 'فشل: ' + errorMessage_(error));
+      console.error('Unable to import order row ' + rowNumber + '.', error);
+    }
+  }
+}
+
+function handleOrderItemSheetEdit(event) {
+  if (!event || !event.range || event.range.getRow() < 2) return;
+  const sheet = event.range.getSheet();
+  const firstRow = event.range.getRow();
+  const rowCount = event.range.getNumRows();
+  const orders = {};
+  for (let offset = 0; offset < rowCount; offset += 1) {
+    const rowNumber = firstRow + offset;
+    const orderId = String(sheet.getRange(rowNumber, 1).getValue() || '').trim();
+    if (orderId) orders[orderId] = rowNumber;
+  }
+  Object.keys(orders).forEach(function (orderId) {
+    const rowNumber = orders[orderId];
+    try {
+      if (event.range.getColumn() === 7 && event.range.getNumColumns() === 1) {
+        updateOrderItemsFromSheet_(orderId, sheet);
+      } else {
+        syncOrderRowFromFirestore_(orderId);
+      }
+      logSync_('Google Sheets → التطبيق', 'محتوى طلب', orderId, 'تمت المزامنة');
+    } catch (error) {
+      syncOrderRowFromFirestore_(orderId);
+      sheet.getRange(rowNumber, 1, 1, ORDER_ITEM_HEADERS.length).setBackground('#fce4e4');
+      logSync_('Google Sheets → التطبيق', 'محتوى طلب', orderId, 'فشل: ' + errorMessage_(error));
+      console.error('Unable to import order item row ' + rowNumber + '.', error);
+    }
+  });
+}
+
+function syncOrderRowFromFirestore_(orderId) {
+  const settings = getSettingsDocument_();
+  const spreadsheetId = settings && spreadsheetIdFromUrl_(settings.spreadsheetUrl);
+  const order = getDocument_('orders', orderId);
+  if (!spreadsheetId || !order) throw new Error('تعذر العثور على إعدادات الجدول أو الطلب.');
+  syncOrderRow_(orderId, order, spreadsheetId);
+}
+
+function updateOrderStatusFromSheet_(orderId, statusValue) {
+  const status = parseOrderStatus_(statusValue);
+  if (!status) throw new Error('اختر حالة صحيحة من القائمة المنسدلة.');
+  const orderSnapshot = getDocumentSnapshot_('orders', orderId);
+  if (!orderSnapshot) throw new Error('الطلب غير موجود في التطبيق.');
+  const notificationSnapshot = getDocumentSnapshot_(NOTIFICATION_COLLECTION, orderId);
+  const now = new Date();
+  const writes = [updateWrite_('orders', orderId, {
+    status: status,
+    updatedAt: now,
+  }, ['status', 'updatedAt'], orderSnapshot.updateTime)];
+  writes.push(notificationWrite_(orderId, orderSnapshot.data.uid, status, notificationSnapshot, now));
+  commitFirestoreWrites_(writes);
+  syncOrderRowFromFirestore_(orderId);
+}
+
+function updateOrderItemsFromSheet_(orderId, sheet) {
+  const orderSnapshot = getDocumentSnapshot_('orders', orderId);
+  if (!orderSnapshot) throw new Error('الطلب غير موجود في التطبيق.');
+  const order = orderSnapshot.data;
+  if (order.status !== 'received' || Number(order.editCount || 0) >= 1) {
+    throw new Error('لا يمكن تعديل محتوى هذا الطلب؛ حالة الطلب لا تسمح أو استُخدمت فرصة التعديل.');
+  }
+  const orderPeriod = order.profile && order.profile.spendingPeriod;
+  const currentPeriod = currentEmployeeSpendingPeriod_();
+  if (orderPeriod && orderPeriod !== currentPeriod) {
+    throw new Error('لا يمكن تعديل طلب من فترة شهرية مغلقة.');
+  }
+
+  const itemMap = {};
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    sheet.getRange(2, 1, lastRow - 1, ORDER_ITEM_HEADERS.length).getValues().forEach(function (row) {
+      if (String(row[0]) !== String(orderId)) return;
+      const productId = String(row[5] || '').trim();
+      const quantity = Number(row[6]);
+      if (!productId || !Number.isInteger(quantity) || quantity < 0 || quantity > 50) {
+        throw new Error('الكمية يجب أن تكون عدداً صحيحاً من صفر إلى ٥٠.');
+      }
+      if (Object.prototype.hasOwnProperty.call(itemMap, productId)) {
+        throw new Error('يوجد أكثر من صف للصنف نفسه في تفاصيل الطلب.');
+      }
+      if (quantity > 0) itemMap[productId] = quantity;
+    });
+  }
+  if (!Object.keys(itemMap).length || Object.keys(itemMap).length > 50) {
+    throw new Error('يجب أن يتضمن الطلب صنفاً واحداً على الأقل وبحد أقصى ٥٠ صنفاً.');
+  }
+
+  const oldDetails = order.itemDetails || {};
+  const itemDetails = {};
+  let totalAmount = 0;
+  Object.keys(itemMap).forEach(function (productId) {
+    const detail = oldDetails[productId];
+    if (!detail || typeof detail.agentPrice !== 'number' ||
+      !Number.isFinite(detail.agentPrice) || detail.agentPrice < 0) {
+      throw new Error('لا يتوفر سعر معتمد لأحد الأصناف. راجع كتالوج المنتجات.');
+    }
+    const lineTotal = detail.agentPrice * itemMap[productId];
+    totalAmount += lineTotal;
+    itemDetails[productId] = Object.assign({}, detail, { lineTotal: lineTotal });
+  });
+  if (!Number.isFinite(totalAmount) || totalAmount < 0 || totalAmount > 1000000000) {
+    throw new Error('إجمالي الطلب خارج النطاق المسموح.');
+  }
+
+  const email = String(order.email || '').trim().toLowerCase();
+  const rosterSnapshot = getDocumentSnapshot_(EMPLOYEE_ROSTER_COLLECTION, email);
+  if (!rosterSnapshot) throw new Error('سجل الموظف المالي غير موجود.');
+  const roster = rosterSnapshot.data;
+  if (roster.spendingPeriod && roster.spendingPeriod !== currentPeriod) {
+    throw new Error('فترة الإنفاق الشهرية غير متطابقة؛ راجع مسؤول النظام.');
+  }
+  const currentSpent = Number(roster.currentMonthlySpent || 0);
+  const previousAmount = Number(order.totalAmount || 0);
+  const nextSpent = currentSpent - previousAmount + totalAmount;
+  if (!Number.isFinite(nextSpent) || nextSpent < 0) {
+    throw new Error('تعذر مطابقة قيمة الطلب مع الإنفاق الشهري.');
+  }
+  if (typeof roster.monthlySpendingLimit === 'number' &&
+    nextSpent > roster.monthlySpendingLimit) {
+    throw new Error('التعديل يتجاوز السقف المالي الشهري للموظف.');
+  }
+
+  const now = new Date();
+  const profile = Object.assign({}, order.profile || {}, {
+    currentMonthlySpent: nextSpent,
+    spendingPeriod: currentPeriod,
+  });
+  if (typeof roster.monthlySpendingLimit === 'number') {
+    profile.monthlySpendingLimit = roster.monthlySpendingLimit;
+  }
+  const notificationSnapshot = getDocumentSnapshot_(NOTIFICATION_COLLECTION, orderId);
+  const writes = [
+    updateWrite_('orders', orderId, {
+      items: itemMap,
+      itemDetails: itemDetails,
+      totalAmount: totalAmount,
+      profile: profile,
+      editCount: 1,
+      updatedAt: now,
+    }, ['items', 'itemDetails', 'totalAmount', 'profile', 'editCount', 'updatedAt'],
+    orderSnapshot.updateTime),
+    updateWrite_(EMPLOYEE_ROSTER_COLLECTION, email, {
+      currentMonthlySpent: nextSpent,
+      spendingPeriod: currentPeriod,
+      lastSpendOrderId: orderId,
+      updatedAt: now,
+    }, ['currentMonthlySpent', 'spendingPeriod', 'lastSpendOrderId', 'updatedAt'],
+    rosterSnapshot.updateTime),
+    notificationWrite_(orderId, order.uid, order.status, notificationSnapshot, now),
+  ];
+  commitFirestoreWrites_(writes);
+  syncOrderRowFromFirestore_(orderId);
+  syncEmployeeRow_(email, '', null);
+}
+
+function parseOrderStatus_(value) {
+  const text = String(value || '').trim();
+  const statuses = {
+    'وصل الطلب (RECEIVED)': 'received',
+    received: 'received',
+    'قيد التجهيز (PREPARING)': 'preparing',
+    preparing: 'preparing',
+    'جاهز للصرف (READY)': 'ready',
+    ready: 'ready',
+    'تم التسليم (FULFILLED)': 'fulfilled',
+    fulfilled: 'fulfilled',
+    'ملغي (CANCELLED)': 'cancelled',
+    cancelled: 'cancelled',
+    'محذوف (DELETED)': 'deleted',
+    deleted: 'deleted',
+  };
+  return statuses[text] || null;
+}
+
+function notificationWrite_(orderId, uid, status, snapshot, now) {
+  const name = firestoreDocumentName_(NOTIFICATION_COLLECTION, orderId);
+  if (snapshot) {
+    return updateWrite_(NOTIFICATION_COLLECTION, orderId, {
+      status: 'pending',
+      eventStatus: status,
+      updatedAt: now,
+    }, ['status', 'eventStatus', 'updatedAt'], snapshot.updateTime);
+  }
+  return {
+    update: {
+      name: name,
+      fields: encodeFields_({
+        orderId: orderId,
+        uid: uid,
+        status: 'pending',
+        eventStatus: status,
+        emailSentAt: new Date(0),
+        createdAt: now,
+        updatedAt: now,
+      }),
+    },
+    currentDocument: { exists: false },
+  };
+}
+
+function updateWrite_(collection, documentId, values, fieldPaths, updateTime) {
+  return {
+    update: {
+      name: firestoreDocumentName_(collection, documentId),
+      fields: encodeFields_(values),
+    },
+    updateMask: { fieldPaths: fieldPaths },
+    currentDocument: { updateTime: updateTime },
+  };
+}
+
+function firestoreDocumentName_(collection, documentId) {
+  const projectId = PropertiesService.getScriptProperties().getProperty('FIREBASE_PROJECT_ID');
+  return 'projects/' + projectId + '/databases/(default)/documents/' +
+    collection + '/' + documentId;
+}
+
+function commitFirestoreWrites_(writes) {
+  const projectId = PropertiesService.getScriptProperties().getProperty('FIREBASE_PROJECT_ID');
+  const url = 'https://firestore.googleapis.com/v1/projects/' +
+    encodeURIComponent(projectId) + '/databases/(default)/documents:commit';
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    payload: JSON.stringify({ writes: writes }),
+    muteHttpExceptions: true,
+  });
+  const status = response.getResponseCode();
+  if (status < 200 || status >= 300) {
+    throw new Error('تعذر حفظ التغييرات معاً. أعد تحميل الصفوف وتحقق من عدم وجود تعديل متزامن. ' +
+      response.getContentText().slice(0, 250));
   }
 }
 
@@ -534,21 +1151,47 @@ function importEmployeeSheetRow_(sheet, rowNumber) {
   const branch = String(values[4] || '').trim();
   const province = String(values[5] || '').trim();
   const limitValue = values[6];
-  const spentValue = values[7];
+  const requestedSpent = values[7];
   const statusText = String(values[8] || '').trim().toLowerCase();
+  const address = String(values[10] || '').trim();
+  const phone = String(values[11] || '').trim();
+  const whatsapp = String(values[12] || '').trim();
   const active = ['نشط', 'active', 'true', '1', 'معتمد'].indexOf(statusText) >= 0;
   const inactive = ['موقوف', 'inactive', 'false', '0', 'غير نشط'].indexOf(statusText) >= 0;
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !employeeCode || employeeCode.length > 80 ||
     (!active && !inactive)) {
     throw new Error('أكمل البريد والكود الوظيفي وحالة الحساب بشكل صحيح.');
   }
+  const codeOwners = findEmployeeEmailsByField_('employeeCode', employeeCode);
+  if (codeOwners.some(function (ownerEmail) { return ownerEmail !== email; })) {
+    throw new Error('الكود الوظيفي مرتبط بسجل موظف آخر.');
+  }
+  const phoneLookup = phone.replace(/\D/g, '');
+  if (phone && (!/^\+?[\d\s()-]{8,40}$/.test(phone) ||
+    phoneLookup.length < 8 || phoneLookup.length > 18)) {
+    throw new Error('رقم الهاتف يجب أن يتضمن من 8 إلى 18 رقماً مع رمز الدولة.');
+  }
+  if (phoneLookup.length >= 8 && phoneLookup.length <= 18) {
+    const phoneOwners = findEmployeeEmailsByField_('phoneLookup', phoneLookup, 1000);
+    if (phoneOwners.some(function (ownerEmail) { return ownerEmail !== email; })) {
+      throw new Error('رقم الهاتف مرتبط بسجل موظف آخر.');
+    }
+  }
   const limit = limitValue === '' || limitValue === null ? null : Number(limitValue);
-  const spent = spentValue === '' || spentValue === null ? 0 : Number(spentValue);
+  const existingRoster = getDocument_(EMPLOYEE_ROSTER_COLLECTION, email);
+  const spent = existingRoster && typeof existingRoster.currentMonthlySpent === 'number'
+    ? existingRoster.currentMonthlySpent : 0;
   if ((limit !== null && (!Number.isFinite(limit) || limit < 0 || limit > 1000000000)) ||
     !Number.isFinite(spent) || spent < 0 || spent > 1000000000) {
     throw new Error('السقف والإنفاق يجب أن يكونا أرقاماً غير سالبة ضمن الحد المسموح.');
   }
-  const period = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM');
+  if (requestedSpent !== '' && requestedSpent !== null &&
+    Number(requestedSpent) !== spent) {
+    sheet.getRange(rowNumber, 8).setValue(spent);
+  }
+  const period = existingRoster && existingRoster.spendingPeriod
+    ? existingRoster.spendingPeriod
+    : Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM');
   const fields = {
     employeeCode: employeeCode.slice(0, 80),
     currentMonthlySpent: spent,
@@ -562,15 +1205,19 @@ function importEmployeeSheetRow_(sheet, rowNumber) {
     ['company', company, 80],
     ['branch', branch, 80],
     ['province', province, 80],
+    ['address', address, 240],
+    ['phone', phone, 40],
+    ['whatsapp', whatsapp, 40],
   ].forEach(function (field) {
     if (field[1]) fields[field[0]] = field[1].slice(0, field[2]);
     else deletedFields.push(field[0]);
   });
+  if (phoneLookup.length >= 8 && phoneLookup.length <= 18) fields.phoneLookup = phoneLookup;
+  else deletedFields.push('phoneLookup');
   if (limit !== null) fields.monthlySpendingLimit = limit;
   else deletedFields.push('monthlySpendingLimit');
   const rosterFields = Object.assign({}, fields);
   const rosterMask = Object.keys(rosterFields).concat(deletedFields);
-  const existingRoster = getDocument_(EMPLOYEE_ROSTER_COLLECTION, email);
   if (existingRoster) {
     patchDocumentFields_(EMPLOYEE_ROSTER_COLLECTION, email, rosterFields, rosterMask);
   } else {
@@ -598,7 +1245,7 @@ function syncEmployeesFromSheet_(spreadsheetId) {
   let processed = 0;
   for (let index = 0; index < rows.length && processed < 100; index += 1) {
     const row = rows[index];
-    if (!row[1] || !row[2] || employeeRowFingerprint_(row) === String(row[10] || '')) continue;
+    if (!row[1] || !row[2] || employeeRowFingerprint_(row) === String(row[13] || '')) continue;
     const rowNumber = index + 2;
     processed += 1;
     try {
@@ -615,12 +1262,11 @@ function syncEmployeesFromSheet_(spreadsheetId) {
 }
 
 function employeeRowFingerprint_(values) {
-  const data = JSON.stringify(values.slice(0, 10).map(function (value) {
+  const data = JSON.stringify([0, 2, 3, 4, 5, 6, 8, 10, 11, 12].map(function (index) {
+    const value = values[index];
     return value instanceof Date ? value.toISOString() : value;
   }));
-  return Utilities.base64EncodeWebSafe(
-    Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, data),
-  ).replace(/=+$/, '');
+  return digestFingerprint_(data);
 }
 
 function currentEmployeeSpendingPeriod_() {
@@ -658,7 +1304,7 @@ function rolloverEmployeeSpending_(spreadsheetId) {
       if (!row[1]) return;
       row[7] = 0;
       row[9] = currentPeriod;
-      row[10] = '';
+      row[13] = '';
     });
     range.setValues(rows);
   }
@@ -730,6 +1376,13 @@ function orderSheetRow_(orderId, order) {
   const excluded = (order.excluded || []).map(function (id) {
     return (details[id] && details[id].name) || id;
   }).join('، ');
+  const createdAt = order.createdAt instanceof Date ? order.createdAt : null;
+  const updatedAt = order.updatedAt instanceof Date ? order.updatedAt : createdAt;
+  const action = Number(order.editCount || 0) > 0
+    ? 'تم تعديل الطلب'
+    : createdAt && updatedAt && updatedAt.getTime() > createdAt.getTime() + 1000
+      ? 'تم تحديث الحالة'
+      : 'تم إنشاء الطلب';
   return [
     orderId,
     order.reference || '',
@@ -750,6 +1403,9 @@ function orderSheetRow_(orderId, order) {
     excluded,
     typeof order.totalAmount === 'number' ? order.totalAmount : '',
     order.currency || 'YER',
+    action,
+    Number(order.editCount || 0),
+    updatedAt || '',
   ].map(safeSheetValue_);
 }
 
@@ -763,6 +1419,18 @@ function orderSheetStatus_(status) {
     deleted: 'محذوف (DELETED)',
   };
   return labels[status] || String(status || 'received');
+}
+
+function orderStatus_(status) {
+  const labels = {
+    received: 'وصل الطلب (RECEIVED)',
+    preparing: 'قيد التجهيز (PREPARING)',
+    ready: 'جاهز للصرف (READY)',
+    fulfilled: 'تم التسليم (FULFILLED)',
+    cancelled: 'ملغي (CANCELLED)',
+    deleted: 'محذوف (DELETED)',
+  };
+  return labels[status] || String(status || '');
 }
 
 function orderStatusColor_(status) {
@@ -804,11 +1472,8 @@ function ensureSheetHeaders_(sheet) {
 
 function findOrderRow_(sheet, orderId) {
   if (sheet.getLastRow() < 2) return 0;
-  const match = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1)
-    .createTextFinder(orderId)
-    .matchEntireCell(true)
-    .findNext();
-  return match ? match.getRow() : 0;
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues();
+  return keepFirstMatchingRow_(sheet, rows, 0, String(orderId));
 }
 
 function safeSheetValue_(value) {
@@ -835,72 +1500,313 @@ function spreadsheetIdFromUrl_(url) {
 function ensureEmployeeSheet_(spreadsheet) {
   let sheet = spreadsheet.getSheetByName(EMPLOYEE_SHEET_NAME);
   if (!sheet) sheet = spreadsheet.insertSheet(EMPLOYEE_SHEET_NAME);
-  ensureEmployeeHeaders_(sheet);
+  if (!ensureEmployeeHeaders_(sheet)) {
+    const foundHeaders = sheet.getLastColumn()
+      ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0]
+        .map(function (header) { return String(header || '').trim(); })
+        .filter(function (header) { return Boolean(header); })
+        .join(' | ')
+      : '(الصف الأول فارغ)';
+    throw new Error(
+      'تعذر التعرّف على عناوين تبويب الموظفين. لم تُحذف البيانات ولم يُنشأ تبويب بديل. ' +
+      'يجب وجود عمود للبريد الإلكتروني وعمود للرقم الوظيفي. العناوين المقروءة: ' +
+      foundHeaders.slice(0, 500),
+    );
+  }
+  styleDataSheet_(sheet, EMPLOYEE_HEADERS, {
+    widths: [180, 230, 130, 230, 130, 130, 170, 170, 130, 130, 250, 150, 150, 60],
+    hiddenColumns: [14],
+    numberColumns: [7, 8],
+  });
   return sheet;
 }
 
 function ensureCatalogSheet_(spreadsheet) {
   let sheet = spreadsheet.getSheetByName(PRODUCT_SHEET_NAME);
   if (!sheet) sheet = spreadsheet.insertSheet(PRODUCT_SHEET_NAME);
-  if (sheet.getLastRow() === 0) {
-    sheet.getRange(1, 1, 1, PRODUCT_HEADERS.length).setValues([PRODUCT_HEADERS]);
-    sheet.setFrozenRows(1);
-    sheet.getRange(1, 1, 1, PRODUCT_HEADERS.length)
-      .setBackground('#162766')
-      .setFontColor('#ffffff')
-      .setFontWeight('bold');
-    sheet.autoResizeColumns(1, PRODUCT_HEADERS.length);
-    return sheet;
-  }
-  const headers = sheet.getRange(1, 1, 1, PRODUCT_HEADERS.length).getDisplayValues()[0];
-  if (!PRODUCT_HEADERS.every(function (header, index) { return headers[index] === header; })) {
-    throw new Error('عناوين تبويب كتالوج المنتجات غير مطابقة للقالب. لا تغيّر صف العناوين.');
-  }
-  sheet.setFrozenRows(1);
+  styleDataSheet_(sheet, PRODUCT_HEADERS, {
+    widths: [150, 210, 260, 150, 200, 120, 170, 250, 120, 120, 60],
+    hiddenColumns: [11],
+    numberColumns: [7],
+  });
   return sheet;
+}
+
+function ensureOrderSheet_(spreadsheet) {
+  let sheet = spreadsheet.getSheetByName('طلبات الموظفين');
+  if (!sheet) sheet = spreadsheet.insertSheet('طلبات الموظفين');
+  styleDataSheet_(sheet, ORDER_HEADERS, {
+    widths: [150, 150, 165, 190, 180, 130, 220, 220, 130, 140, 140, 260, 160, 110, 110, 320, 300, 150, 90, 150, 110, 165],
+    hiddenColumns: [1],
+    numberColumns: [18, 20],
+    dateColumns: [3, 22],
+  });
+  const validation = SpreadsheetApp.newDataValidation()
+    .requireValueInList(ORDER_STATUS_OPTIONS, true)
+    .setAllowInvalid(false)
+    .build();
+  if (sheet.getMaxRows() > 1) {
+    sheet.getRange(2, 4, sheet.getMaxRows() - 1, 1).setDataValidation(validation);
+  }
+  return sheet;
+}
+
+function ensureOrderItemSheet_(spreadsheet) {
+  let sheet = spreadsheet.getSheetByName(ORDER_ITEM_SHEET_NAME);
+  if (!sheet) sheet = spreadsheet.insertSheet(ORDER_ITEM_SHEET_NAME);
+  styleDataSheet_(sheet, ORDER_ITEM_HEADERS, {
+    widths: [150, 150, 165, 190, 230, 180, 110, 150, 150],
+    hiddenColumns: [1, 6],
+    numberColumns: [7, 8, 9],
+    dateColumns: [3],
+  });
+  return sheet;
+}
+
+function ensureSyncLogSheet_(spreadsheet) {
+  let sheet = spreadsheet.getSheetByName(SYNC_LOG_SHEET_NAME);
+  if (!sheet) sheet = spreadsheet.insertSheet(SYNC_LOG_SHEET_NAME);
+  styleDataSheet_(sheet, SYNC_LOG_HEADERS, {
+    widths: [170, 180, 150, 260, 420],
+    dateColumns: [1],
+  });
+  return sheet;
+}
+
+function ensureSummarySheet_(spreadsheet) {
+  let sheet = spreadsheet.getSheetByName(SUMMARY_SHEET_NAME);
+  if (!sheet) sheet = spreadsheet.insertSheet(SUMMARY_SHEET_NAME, 0);
+  sheet.clear();
+  sheet.setRightToLeft(false);
+  sheet.getRange(1, 1, sheet.getMaxRows(), 2)
+    .setTextDirection(SpreadsheetApp.TextDirection.LEFT_TO_RIGHT);
+  sheet.getRange(1, 1, 1, 2).setValues([['مؤشرات بوابة السلال الغذائية', 'القيمة']]);
+  sheet.getRange(2, 1, 4, 2).setValues([
+    ['عدد الطلبات المسجلة', '=MAX(0,COUNTA(\'طلبات الموظفين\'!B:B)-1)'],
+    ['إجمالي قيمة الطلبات (ر.ي)', '=SUM(\'طلبات الموظفين\'!R:R)'],
+    ['الموظفون النشطون', '=COUNTIF(\'سجل الموظفين\'!I:I,"نشط")'],
+    ['المنتجات النشطة', '=COUNTIF(\'كتالوج المنتجات\'!I:I,"نشط")'],
+  ]);
+  sheet.getRange(1, 1, 1, 2).setBackground('#162766').setFontColor('#ffffff').setFontWeight('bold');
+  sheet.getRange(2, 1, 4, 2).setBackground('#f3f6fb');
+  sheet.getRange(2, 2, 4, 1).setNumberFormat('#,##0.00');
+  sheet.setFrozenRows(1);
+  sheet.setColumnWidths(1, 1, 260);
+  sheet.setColumnWidths(2, 1, 220);
+  sheet.setRowHeight(1, 36);
+  return sheet;
+}
+
+function styleDataSheet_(sheet, headers, options) {
+  if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  const current = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+  if (!headers.every(function (header, index) { return current[index] === header; })) {
+    throw new Error('عناوين تبويب "' + sheet.getName() + '" لا تطابق قالب المزامنة.');
+  }
+  sheet.setRightToLeft(false);
+  sheet.setFrozenRows(1);
+  sheet.setRowHeight(1, 38);
+  sheet.getRange(1, 1, 1, headers.length)
+    .setBackground('#162766')
+    .setFontColor('#ffffff')
+    .setFontWeight('bold')
+    .setWrap(true);
+  sheet.getRange(1, 1, sheet.getMaxRows(), headers.length)
+    .setTextDirection(SpreadsheetApp.TextDirection.LEFT_TO_RIGHT);
+  if (!sheet.getFilter()) sheet.getRange(1, 1, sheet.getMaxRows(), headers.length).createFilter();
+  (options.widths || []).forEach(function (width, index) {
+    sheet.setColumnWidth(index + 1, width);
+  });
+  (options.hiddenColumns || []).forEach(function (column) {
+    if (!sheet.isColumnHiddenByUser(column)) sheet.hideColumns(column);
+  });
+  (options.numberColumns || []).forEach(function (column) {
+    if (sheet.getMaxRows() > 1) sheet.getRange(2, column, sheet.getMaxRows() - 1, 1)
+      .setNumberFormat('#,##0.00;[Red]-#,##0.00');
+  });
+  (options.dateColumns || []).forEach(function (column) {
+    if (sheet.getMaxRows() > 1) sheet.getRange(2, column, sheet.getMaxRows() - 1, 1)
+      .setNumberFormat('yyyy-mm-dd hh:mm');
+  });
+}
+
+function rebuildNatcoSheetsIfNeeded_(spreadsheet) {
+  const properties = PropertiesService.getScriptProperties();
+  if (properties.getProperty('SHEET_SCHEMA_VERSION') === SHEET_SCHEMA_VERSION) return;
+  spreadsheet.getSheets().forEach(function (sheet) {
+    sheet.setRightToLeft(false);
+  });
+  properties.setProperty('SHEET_SCHEMA_VERSION', SHEET_SCHEMA_VERSION);
+}
+
+function uniqueSheetName_(spreadsheet, baseName) {
+  let name = baseName.slice(0, 95);
+  let suffix = 1;
+  while (spreadsheet.getSheetByName(name)) {
+    name = baseName.slice(0, 90) + ' ' + suffix;
+    suffix += 1;
+  }
+  return name;
+}
+
+function logSync_(direction, dataType, id, result) {
+  try {
+    const settings = getSettingsDocument_();
+    const spreadsheetId = settings && spreadsheetIdFromUrl_(settings.spreadsheetUrl);
+    if (!spreadsheetId) return;
+    const sheet = ensureSyncLogSheet_(SpreadsheetApp.openById(spreadsheetId));
+    sheet.appendRow([new Date(), direction, dataType, safeSheetValue_(id), safeSheetValue_(result)]);
+    const excess = sheet.getLastRow() - 501;
+    if (excess > 0) sheet.deleteRows(2, excess);
+  } catch (error) {
+    console.error('Unable to write a sync log entry.', error);
+  }
+}
+
+function errorMessage_(error) {
+  return String(error && error.message ? error.message : error).replace(/\s+/g, ' ').slice(0, 300);
 }
 
 function ensureEmployeeHeaders_(sheet) {
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, EMPLOYEE_HEADERS.length).setValues([EMPLOYEE_HEADERS]);
-    sheet.setFrozenRows(1);
-    sheet.getRange(1, 1, 1, EMPLOYEE_HEADERS.length)
-      .setBackground('#162766')
-      .setFontColor('#ffffff')
-      .setFontWeight('bold');
-    sheet.autoResizeColumns(1, EMPLOYEE_HEADERS.length);
-    sheet.hideColumns(EMPLOYEE_HEADERS.length);
-    return;
+    return true;
   }
-  const legacyHeaders = sheet.getRange(1, 1, 1, 9).getDisplayValues()[0];
-  if (!EMPLOYEE_HEADERS.slice(0, 9).every(function (header, index) { return legacyHeaders[index] === header; })) {
-    throw new Error('عناوين تبويب سجل الموظفين غير مطابقة للقالب. لا تغيّر صف العناوين.');
+  const columnCount = Math.max(sheet.getLastColumn(), 1);
+  const rawHeaders = sheet.getRange(1, 1, 1, columnCount).getDisplayValues()[0];
+  const headers = rawHeaders.map(normalizeSheetHeader_);
+  const aliases = [
+    ['اسم الموظف', 'اسم الموظفة', 'اسم الموظف الكامل', 'الاسم الكامل', 'الموظف', 'الاسم'],
+    ['البريد الإلكتروني', 'البريد الالكتروني', 'البريد الإلكتروني للموظف', 'البريد', 'الايميل', 'الإيميل', 'email', 'email address', 'employee email'],
+    ['الرقم الوظيفي', 'الكود الوظيفي', 'كود الموظف', 'رقم الموظف', 'معرف الموظف', 'معرّف الموظف', 'employee id', 'employee code'],
+    ['الشركة/الشركة التابعة', 'الشركة التابعة', 'اسم الشركة', 'جهة العمل', 'الشركة'],
+    ['الفرع', 'اسم الفرع', 'فرع'],
+    ['المحافظة', 'المدينة', 'المدينة/المحافظة'],
+    ['السقف الشهري المعتمد', 'الحد الشهري', 'السقف الشهري', 'السقف'],
+    ['الإنفاق الشهري الحالي', 'الإنفاق الشهري', 'المصروف الشهري', 'الإنفاق الحالي', 'الإنفاق'],
+    ['حالة الحساب', 'حالة الموظف', 'الحالة'],
+    ['فترة الإنفاق', 'الشهر الحالي', 'الشهر'],
+    ['العنوان', 'العنوان التفصيلي', 'عنوان التوصيل'],
+    ['الهاتف', 'رقم الهاتف', 'رقم الجوال', 'الجوال'],
+    ['واتساب', 'رقم الواتساب', 'whatsapp'],
+    ['بصمة المزامنة', 'بصمة'],
+  ].map(function (options) { return options.map(normalizeSheetHeader_); });
+  const positions = aliases.map(function (options) {
+    return headers.findIndex(function (header) { return options.indexOf(header) >= 0; });
+  });
+  if (positions[1] < 0 || positions[2] < 0) return false;
+  if (EMPLOYEE_HEADERS.every(function (header, index) {
+    return headers[index] === normalizeSheetHeader_(header);
+  })) return true;
+
+  const lastRow = sheet.getLastRow();
+  const oldValues = lastRow > 1
+    ? sheet.getRange(2, 1, lastRow - 1, columnCount).getValues()
+    : [];
+  const recognizedPositions = positions.filter(function (position) { return position >= 0; });
+  const extraPositions = headers.map(function (header, index) { return index; })
+    .filter(function (index) {
+      if (recognizedPositions.indexOf(index) >= 0) return false;
+      return Boolean(headers[index]) || oldValues.some(function (row) {
+        return row[index] !== '' && row[index] !== null;
+      });
+    });
+  const migratedHeaders = EMPLOYEE_HEADERS.concat(extraPositions.map(function (position) {
+    return String(rawHeaders[position] || '').trim() || 'حقل إضافي ' + (position + 1);
+  }));
+  const migrated = oldValues.map(function (row) {
+    const values = positions.map(function (position) { return position < 0 ? '' : row[position]; });
+    values[13] = employeeRowFingerprint_(values);
+    return values.concat(extraPositions.map(function (position) { return row[position]; }));
+  });
+  sheet.getRange(1, 1, 1, migratedHeaders.length).setValues([migratedHeaders]);
+  if (migrated.length) {
+    sheet.getRange(2, 1, migrated.length, migratedHeaders.length).setValues(migrated);
   }
-  const trailingHeaders = sheet.getRange(1, 10, 1, 2).getDisplayValues()[0];
-  if (trailingHeaders[0] && trailingHeaders[0] !== EMPLOYEE_HEADERS[9]) {
-    throw new Error('أعمدة المزامنة الجديدة غير متاحة. لا تضع بيانات بعد عمود حالة الحساب.');
-  }
-  sheet.getRange(1, 10, 1, 2).setValues([EMPLOYEE_HEADERS.slice(9)]);
-  sheet.setFrozenRows(1);
-  sheet.hideColumns(EMPLOYEE_HEADERS.length);
+  return true;
 }
 
 function findEmployeeRow_(sheet, email) {
   if (sheet.getLastRow() < 2) return 0;
-  const match = sheet.getRange(2, 2, sheet.getLastRow() - 1, 1)
-    .createTextFinder(email)
-    .matchEntireCell(true)
-    .findNext();
-  return match ? match.getRow() : 0;
+  const rows = sheet.getRange(2, 2, sheet.getLastRow() - 1, 1).getDisplayValues();
+  return keepFirstMatchingRow_(sheet, rows, String(email).trim().toLowerCase(), true);
+}
+
+function normalizeSheetHeader_(value) {
+  return String(value || '').trim().toLocaleLowerCase()
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+    .replace(/[\s_\-./\\()]+/g, '');
+}
+
+function keepFirstMatchingRow_(sheet, values, target, ignoreCase) {
+  const normalizedTarget = ignoreCase ? String(target).trim().toLowerCase() : String(target).trim();
+  const matches = [];
+  values.forEach(function (row, index) {
+    let value = String(row[0] || '').trim();
+    if (ignoreCase) value = value.toLowerCase();
+    if (value === normalizedTarget) matches.push(index + 2);
+  });
+  if (!matches.length) return 0;
+  matches.slice(1).sort(function (left, right) { return right - left; })
+    .forEach(function (row) { sheet.deleteRow(row); });
+  return matches[0];
+}
+
+function deduplicateDataRowsByKey_(sheet, keyColumns) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 3) return 0;
+  const width = Math.max.apply(null, keyColumns) + 1;
+  const values = sheet.getRange(2, 1, lastRow - 1, width).getDisplayValues();
+  const seen = {};
+  const duplicates = [];
+  values.forEach(function (row, index) {
+    const keyParts = keyColumns.map(function (column) { return String(row[column] || '').trim(); });
+    if (keyParts.some(function (part) { return !part; })) return;
+    const key = JSON.stringify(keyParts);
+    if (seen[key]) duplicates.push(index + 2);
+    else seen[key] = true;
+  });
+  duplicates.sort(function (left, right) { return right - left; })
+    .forEach(function (row) { sheet.deleteRow(row); });
+  return duplicates.length;
+}
+
+function removeDuplicateDataRows_(spreadsheet) {
+  const keyedSheets = [
+    [EMPLOYEE_SHEET_NAME, [1]],
+    [PRODUCT_SHEET_NAME, [0]],
+    ['طلبات الموظفين', [0]],
+    [ORDER_ITEM_SHEET_NAME, [0, 5]],
+  ];
+  let removed = 0;
+  keyedSheets.forEach(function (entry) {
+    const sheet = spreadsheet.getSheetByName(entry[0]);
+    if (sheet) removed += deduplicateDataRowsByKey_(sheet, entry[1]);
+  });
+  if (removed) console.warn('أزيلت ' + removed + ' صفوف مكررة من التبويبات الأساسية مع الاحتفاظ بأول سجل لكل معرّف.');
+  return removed;
 }
 
 function ensureEmployeeEditTrigger_(spreadsheetId) {
-  const exists = ScriptApp.getProjectTriggers().some(function (trigger) {
-    return trigger.getHandlerFunction() === 'handleEmployeeSheetEdit' &&
-      trigger.getTriggerSourceId() === spreadsheetId;
+  ensureSpreadsheetEditTrigger_(spreadsheetId);
+}
+
+function ensureSpreadsheetEditTrigger_(spreadsheetId) {
+  const triggers = ScriptApp.getProjectTriggers();
+  let exists = false;
+  triggers.forEach(function (trigger) {
+    if (trigger.getTriggerSourceId() !== spreadsheetId) return;
+    const handler = trigger.getHandlerFunction();
+    if (handler === 'handleNatcoSheetEdit') {
+      if (exists) ScriptApp.deleteTrigger(trigger);
+      else exists = true;
+    }
+    if (handler === 'handleEmployeeSheetEdit' || handler === 'handleCatalogSheetEdit') {
+      ScriptApp.deleteTrigger(trigger);
+    }
   });
   if (!exists) {
-    ScriptApp.newTrigger('handleEmployeeSheetEdit')
+    ScriptApp.newTrigger('handleNatcoSheetEdit')
       .forSpreadsheet(spreadsheetId)
       .onEdit()
       .create();
@@ -908,8 +1814,11 @@ function ensureEmployeeEditTrigger_(spreadsheetId) {
 }
 
 function ensureQueueTrigger_() {
-  const exists = ScriptApp.getProjectTriggers().some(function (trigger) {
-    return trigger.getHandlerFunction() === 'processNatcoOrderQueue';
+  let exists = false;
+  ScriptApp.getProjectTriggers().forEach(function (trigger) {
+    if (trigger.getHandlerFunction() !== 'processNatcoOrderQueue') return;
+    if (exists) ScriptApp.deleteTrigger(trigger);
+    else exists = true;
   });
   if (!exists) {
     ScriptApp.newTrigger('processNatcoOrderQueue').timeBased().everyMinutes(1).create();
@@ -926,6 +1835,29 @@ function getDocument_(collection, documentId) {
   const result = decodeFields_(response.fields || {});
   result.id = documentId;
   return result;
+}
+
+function getDocumentSnapshot_(collection, documentId) {
+  const projectId = PropertiesService.getScriptProperties().getProperty('FIREBASE_PROJECT_ID');
+  if (!projectId) throw new Error('شغّل initializeNatcoIntegration أولاً لإعداد Firebase Project ID.');
+  const url = 'https://firestore.googleapis.com/v1/projects/' +
+    encodeURIComponent(projectId) + '/databases/(default)/documents/' +
+    collection + '/' + encodeURIComponent(documentId);
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true,
+  });
+  const status = response.getResponseCode();
+  if (status === 404) return null;
+  if (status < 200 || status >= 300) {
+    throw new Error('تعذر قراءة سجل المزامنة (' + status + '): ' +
+      response.getContentText().slice(0, 250));
+  }
+  const document = JSON.parse(response.getContentText());
+  const data = decodeFields_(document.fields || {});
+  data.id = document.name.split('/').pop();
+  return { data: data, updateTime: document.updateTime, name: document.name };
 }
 
 function writeDocument_(collection, documentId, values, update) {

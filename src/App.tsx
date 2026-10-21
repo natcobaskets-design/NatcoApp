@@ -30,10 +30,10 @@ function buildEmployeeProfile(
     ...(typeof rosterData.company === 'string' ? { company: rosterData.company } : {}),
     ...(typeof rosterData.branch === 'string' ? { branch: rosterData.branch } : {}),
     ...(typeof rosterData.province === 'string' ? { province: rosterData.province } : {}),
-    ...(typeof rosterData.name === 'string' && !savedProfile?.name ? { name: rosterData.name } : {}),
-    ...(typeof rosterData.address === 'string' && !savedProfile?.address ? { address: rosterData.address } : {}),
-    ...(typeof rosterData.phone === 'string' && !savedProfile?.phone ? { phone: rosterData.phone } : {}),
-    ...(typeof rosterData.whatsapp === 'string' && !savedProfile?.whatsapp ? { whatsapp: rosterData.whatsapp } : {}),
+    ...(typeof rosterData.name === 'string' ? { name: rosterData.name } : {}),
+    ...(typeof rosterData.address === 'string' ? { address: rosterData.address } : {}),
+    ...(typeof rosterData.phone === 'string' ? { phone: rosterData.phone } : {}),
+    ...(typeof rosterData.whatsapp === 'string' ? { whatsapp: rosterData.whatsapp } : {}),
     ...(typeof rosterData.monthlySpendingLimit === 'number'
       ? { monthlySpendingLimit: rosterData.monthlySpendingLimit } : {}),
     currentMonthlySpent: typeof rosterData.currentMonthlySpent === 'number'
@@ -71,6 +71,48 @@ function orderSubmissionErrorMessage(error: unknown, isEditing: boolean, traceId
           : 'FAILED'
   const errorCodeLabel = `ORDER_${isEditing ? 'EDIT' : 'SUBMISSION'}_${errorName}`
   return `تعذر ${action} الطلب. رمز الخطأ: ${errorCodeLabel}. رقم المتابعة: ${traceId}.`
+}
+
+function orderEditComparison(
+  previous: Order,
+  next: Pick<Order, 'baskets' | 'items' | 'itemDetails' | 'excluded' | 'pickupBranch' | 'totalAmount'>,
+  basketNames: Record<string, string>,
+): string {
+  const changes: string[] = []
+  const basketIds = new Set([...Object.keys(previous.baskets), ...Object.keys(next.baskets)])
+  basketIds.forEach((id) => {
+    const before = previous.baskets[id] ?? 0
+    const after = next.baskets[id] ?? 0
+    if (before !== after) changes.push(`${basketNames[id] ?? id}: قبل ${before}، بعد ${after}`)
+  })
+  const productIds = new Set([...Object.keys(previous.items), ...Object.keys(next.items)])
+  productIds.forEach((id) => {
+    const before = previous.items[id] ?? 0
+    const after = next.items[id] ?? 0
+    if (before !== after) {
+      const name = next.itemDetails[id]?.name ?? previous.itemDetails[id]?.name ?? id
+      changes.push(`${name}: قبل ${before}، بعد ${after}`)
+    }
+  })
+  if (previous.pickupBranch !== next.pickupBranch) {
+    changes.push(`فرع الاستلام: قبل ${previous.pickupBranch || previous.profile.branch}، بعد ${next.pickupBranch}`)
+  }
+  if (previous.totalAmount !== next.totalAmount) {
+    changes.push(`الإجمالي: قبل ${previous.totalAmount ?? 0}، بعد ${next.totalAmount ?? 0} ر.ي`)
+  }
+  const previousExcluded = previous.excluded
+    .map((id) => previous.itemDetails[id]?.name ?? id)
+    .sort()
+    .join('، ')
+  const nextExcluded = next.excluded
+    .map((id) => next.itemDetails[id]?.name ?? id)
+    .sort()
+    .join('، ')
+  if (previousExcluded !== nextExcluded) {
+    changes.push(`الأصناف المستبعدة: قبل ${previousExcluded || 'لا يوجد'}، بعد ${nextExcluded || 'لا يوجد'}`)
+  }
+  if (!changes.length) changes.push('لم تتغير الأصناف أو الكميات أو المبلغ.')
+  return `تم التعديل على الطلب ${previous.reference}.\nقبل التعديل: ${previous.totalAmount ?? 0} ر.ي.\nبعد التعديل: ${next.totalAmount ?? 0} ر.ي.\nالتغييرات: ${changes.join('؛ ')}.`
 }
 
 function App() {
@@ -213,8 +255,9 @@ function App() {
 
   useEffect(() => {
     if (!authUser || !firestore) return
-    return onSnapshot(
-      doc(firestore, 'admin_users', authUser.uid),
+    const database = firestore
+    const stopWatching = onSnapshot(
+      doc(database, 'admin_users', authUser.uid),
       (snapshot) => {
         const hasAdminAccess = snapshot.exists() && snapshot.data().active === true
         setIsAdmin(hasAdminAccess)
@@ -225,6 +268,7 @@ function App() {
         setNotice(firebaseErrorMessage(error))
       },
     )
+    return stopWatching
   }, [authUser])
 
   useEffect(() => {
@@ -301,6 +345,46 @@ function App() {
     })
     return () => { current = false }
   }, [isEmployee])
+
+  useEffect(() => {
+    const normalizedEmail = authUser?.email?.trim().toLowerCase()
+    if (!isEmployee || !authUser || !normalizedEmail || !firestore) return
+    const rosterRef = doc(firestore, 'employee_roster', normalizedEmail)
+    const profileRef = doc(firestore, 'employees', authUser.uid)
+    let rosterData: Record<string, unknown> | null = null
+    let savedProfile: EmployeeProfile | null = null
+    const applyLatestProfile = () => {
+      if (!rosterData) return
+      if (rosterData.active !== true) {
+        setIsEmployee(false)
+        setIdentityIssue('تم إيقاف اعتماد هذا الحساب. راجع مسؤول الموارد البشرية.')
+        setScreen('email')
+        return
+      }
+      const latest = buildEmployeeProfile(savedProfile, rosterData, normalizedEmail)
+      setAssignedCompany(typeof rosterData.company === 'string' ? rosterData.company : '')
+      setProfile(latest)
+      setPickupBranch((current) => current || latest.branch)
+    }
+    const unsubscribeRoster = onSnapshot(rosterRef, (snapshot) => {
+      rosterData = snapshot.exists() ? snapshot.data() : null
+      applyLatestProfile()
+    }, (error) => {
+      console.error('Unable to subscribe to employee roster changes.', error)
+      setNotice(firebaseErrorMessage(error))
+    })
+    const unsubscribeProfile = onSnapshot(profileRef, (snapshot) => {
+      savedProfile = snapshot.exists() ? parseProfile(snapshot.data()) : null
+      applyLatestProfile()
+    }, (error) => {
+      console.error('Unable to subscribe to employee profile changes.', error)
+      setNotice(firebaseErrorMessage(error))
+    })
+    return () => {
+      unsubscribeRoster()
+      unsubscribeProfile()
+    }
+  }, [authUser, isEmployee])
 
   useEffect(() => {
     if (!isEmployee || !firestore) return
@@ -386,7 +470,9 @@ function App() {
     event.preventDefault()
     const normalizedEmail = email.trim().toLowerCase()
     if (!firebaseAuth || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || !password) {
-      setNotice(!firebaseAuth ? 'تسجيل الدخول غير متاح حالياً. حاول مجدداً لاحقاً.' : 'أدخل بريداً إلكترونياً وكلمة مرور صحيحة.')
+      setNotice(!firebaseAuth
+        ? 'تسجيل الدخول غير متاح حالياً. حاول مجدداً لاحقاً.'
+        : 'أدخل بريدك الإلكتروني وكلمة المرور. تسجيل الدخول بالهاتف أو الرقم الوظيفي غير متاح في النسخة المجانية.')
       return
     }
     setBusy(true)
@@ -394,7 +480,7 @@ function App() {
       await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, password)
       setPassword('')
     } catch (error) {
-      console.error('Firebase sign-in failed.', error)
+      console.error('Employee sign-in failed.', error)
       setNotice(firebaseErrorMessage(error))
     } finally {
       setBusy(false)
@@ -402,17 +488,20 @@ function App() {
   }
 
   async function registerEmployee() {
-    if (!firebaseAuth || !email.trim() || password.length < 8) {
-      setNotice('أدخل بريدك الإلكتروني وكلمة مرور من ٨ أحرف على الأقل.')
+    const normalizedEmail = email.trim().toLowerCase()
+    if (!firebaseAuth ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) ||
+      password.length < 8 || password.length > 128) {
+      setNotice('أدخل بريدك الإلكتروني المعتمد وكلمة مرور من ٨ أحرف على الأقل.')
       return
     }
     setBusy(true)
     try {
-      const credential = await createUserWithEmailAndPassword(firebaseAuth, email.trim().toLowerCase(), password)
+      const credential = await createUserWithEmailAndPassword(firebaseAuth, normalizedEmail, password)
       await sendEmailVerification(credential.user)
       await signOut(firebaseAuth)
       setPassword('')
-      setNotice('أرسلنا رسالة تحقق إلى بريدك. بعد التحقق، سجّل الدخول وانتظر اعتماد الموارد البشرية.')
+      setNotice('أرسلنا رسالة تحقق إلى بريدك الإلكتروني. بعد التحقق، سجّل الدخول بالبريد المعتمد. يجب أن يضاف الموظف إلى سجل الاعتماد قبل استخدام النظام.')
     } catch (error) {
       console.error('Firebase employee account registration failed.', error)
       setNotice(firebaseErrorMessage(error))
@@ -422,12 +511,13 @@ function App() {
   }
 
   async function resetPassword() {
-    if (!firebaseAuth || !email.trim()) {
+    const resetEmail = email.trim().toLowerCase()
+    if (!firebaseAuth || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(resetEmail)) {
       setNotice('أدخل بريدك الإلكتروني لإرسال رابط إعادة تعيين كلمة المرور.')
       return
     }
     try {
-      await sendPasswordResetEmail(firebaseAuth, email.trim().toLowerCase())
+      await sendPasswordResetEmail(firebaseAuth, resetEmail)
       setNotice('تم إرسال رابط إعادة تعيين كلمة المرور إذا كان الحساب مسجلاً.')
     } catch (error) {
       console.error('Firebase password reset request failed.', error)
@@ -438,11 +528,16 @@ function App() {
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!profile.employeeCode.trim() || !profile.name.trim() || !profile.company ||
-      !profile.branch || !profile.address.trim() || !profile.phone.trim() || !profile.whatsapp.trim()) {
+      !profile.branch || !profile.address.trim() || !profile.whatsapp.trim()) {
       setNotice('أكمل الحقول المطلوبة قبل المتابعة.')
       return
     }
-    if (!/^\+?[\d\s()-]{8,18}$/.test(profile.phone) || !/^\+?[\d\s()-]{8,18}$/.test(profile.whatsapp)) {
+    const phoneDigits = profile.phone.replace(/\D/g, '')
+    if ((profile.phone && (!/^\+?[\d\s()-]{8,30}$/.test(profile.phone) ||
+      phoneDigits.length < 8 || phoneDigits.length > 18)) ||
+      !/^\+?[\d\s()-]{8,30}$/.test(profile.whatsapp) ||
+      profile.whatsapp.replace(/\D/g, '').length < 8 ||
+      profile.whatsapp.replace(/\D/g, '').length > 18) {
       setNotice('تحقق من إدخال رقم هاتف وواتساب صحيحين.')
       return
     }
@@ -739,11 +834,20 @@ function App() {
       setEditingOrderId(null)
       setActiveOrder(order)
       setScreen('receipt')
+      const editSummary = editingOrderId && activeOrder
+        ? orderEditComparison(
+          activeOrder,
+          orderData,
+          Object.fromEntries(basketDefinitions.map((basket) => [basket.id, basket.name])),
+        )
+        : ''
       setNotice(!notificationQueued
-        ? 'تم تأكيد طلبك وحُفظ الإنفاق، لكن تعذر إرسال إشعار الإدارة. سيظل الطلب ظاهرًا في لوحة الإدارة.'
+        ? `${editingOrderId ? editSummary : 'تم تأكيد طلبك.'} حُفظ الطلب، لكن تعذر إرسال إشعار الإدارة. سيظل الطلب ظاهرًا في لوحة الإدارة.`
         : !sheetSyncQueued
-          ? 'تم تأكيد طلبك وحُفظ الإنفاق، لكن تعذرت إضافة تحديث Google Sheets. أبلغ مسؤول النظام لمزامنة السجل.'
-          : 'تم تأكيد طلبك. سيظهر للمسؤولين في لوحة الإدارة ويُرسل إشعارهم بعد المزامنة.')
+          ? `${editingOrderId ? editSummary : 'تم تأكيد طلبك.'} حُفظ الإنفاق، لكن تعذرت إضافة تحديث Google Sheets. أبلغ مسؤول النظام لمزامنة السجل.`
+          : editingOrderId
+            ? editSummary
+            : 'تم تأكيد طلبك. سيظهر للمسؤولين في لوحة الإدارة ويُرسل إشعارهم بعد المزامنة.')
     } catch (error) {
       console.error('Unable to submit the employee order to Firestore.', {
         stage: failureStage,

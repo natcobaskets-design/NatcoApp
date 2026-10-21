@@ -34,6 +34,15 @@ export type LoginProps = {
 
 export function LoginPanel(props: LoginProps) {
   const [showPassword, setShowPassword] = useState(false)
+  const [registrationMode, setRegistrationMode] = useState(false)
+  function submitCredentials(event: FormEvent<HTMLFormElement>) {
+    if (registrationMode) {
+      event.preventDefault()
+      props.onRegister()
+    } else {
+      props.onSignIn(event)
+    }
+  }
   return <div className="panel login-panel">
     <div className="login-illustration">
       <div className="login-orbit"><div className="login-basket"><ShoppingBasket size={42} /></div><span className="orbit-dot dot-one" /><span className="orbit-dot dot-two" /><span className="orbit-dot dot-three" /></div>
@@ -48,17 +57,19 @@ export function LoginPanel(props: LoginProps) {
           <button className="text-button" onClick={props.onSignOut}><LogOut size={15} /> تسجيل الخروج</button>
         </div> :
           <>
-            <h3>أهلاً بك في بوابة ناتكو</h3>
-            <p className="form-intro">سجّل دخولك ببريدك الإلكتروني وكلمة المرور.</p>
+            <h3>{registrationMode ? 'إنشاء حساب موظف' : 'أهلاً بك في بوابة ناتكو'}</h3>
+            <p className="form-intro">{registrationMode
+              ? 'أنشئ حساباً بالبريد الإلكتروني المعتمد لدى الموارد البشرية.'
+              : 'سجّل الدخول ببريدك الإلكتروني وكلمة المرور.'}</p>
             {!props.configured && <div className="firebase-warning"><strong>الخدمة غير متاحة حالياً</strong><small>يتعذر تسجيل الدخول الآن. حاول مرة أخرى لاحقاً أو تواصل مع الدعم.</small></div>}
             {props.identityIssue && !props.hasSession && <div className="auth-inline-error" role="alert">{props.identityIssue}<button onClick={props.onClearIssue} aria-label="إغلاق"><X size={14} /></button></div>}
-            <form className="auth-fields" onSubmit={props.onSignIn}>
-              <label className="field"><span>البريد الإلكتروني <b className="required">*</b></span>
-                <input autoComplete="email" type="email" required value={props.email} onChange={(event) => props.setEmail(event.target.value)} placeholder="name@company.com" dir="ltr" />
+            <form className="auth-fields" onSubmit={submitCredentials}>
+              <label className="field"><span>البريد الإلكتروني المعتمد <b className="required">*</b></span>
+                <input autoComplete={registrationMode ? 'email' : 'username'} type="email" required value={props.email} onChange={(event) => props.setEmail(event.target.value)} placeholder="name@company.com" dir="ltr" />
               </label>
-              <label className="field"><span>كلمة المرور <b className="required">*</b></span>
+              <label className="field"><span>{registrationMode ? 'إنشاء كلمة مرور' : 'كلمة المرور'} <b className="required">*</b></span>
                 <span className="password-input-wrap" dir="ltr">
-                  <input autoComplete="current-password" type={showPassword ? 'text' : 'password'} required value={props.password} onChange={(event) => props.setPassword(event.target.value)} placeholder="••••••••" />
+                  <input autoComplete={registrationMode ? 'new-password' : 'current-password'} type={showPassword ? 'text' : 'password'} minLength={registrationMode ? 8 : undefined} required value={props.password} onChange={(event) => props.setPassword(event.target.value)} placeholder="••••••••" />
                   <button
                     className="password-visibility"
                     type="button"
@@ -68,13 +79,15 @@ export function LoginPanel(props: LoginProps) {
                   >{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button>
                 </span>
               </label>
-              <button className="primary-button" type="submit" disabled={!props.configured || props.busy}>{props.busy ? 'جارٍ التحقق…' : 'تسجيل الدخول'} <ArrowLeft size={18} /></button>
+              <button className="primary-button" type="submit" disabled={!props.configured || props.busy}>{props.busy ? 'جارٍ التحقق…' : registrationMode ? 'إنشاء الحساب' : 'تسجيل الدخول'} <ArrowLeft size={18} /></button>
             </form>
             <div className="auth-secondary-actions">
-              <button className="text-button" disabled={!props.configured || props.busy} onClick={props.onRegister}>إنشاء حساب</button>
-              <button className="text-button" disabled={!props.configured || props.busy} onClick={props.onReset}>نسيت كلمة المرور؟</button>
+              <button className="text-button" disabled={!props.configured || props.busy} onClick={() => {
+                setRegistrationMode((current) => !current)
+              }}>{registrationMode ? 'لدي حساب بالفعل' : 'إنشاء حساب'}</button>
+              {!registrationMode && <button className="text-button" disabled={!props.configured || props.busy} onClick={props.onReset}>نسيت كلمة المرور؟</button>}
             </div>
-            <div className="local-note"><ShieldCheck size={16} /> يجب التحقق من البريد واعتماد الموظف من مسؤول ناتكو</div>
+            <div className="local-note"><ShieldCheck size={16} /> التسجيل والدخول متاحان بالبريد الإلكتروني. يجب اعتماد بريد الموظف في سجل الموارد البشرية وتأكيده قبل استخدام النظام.</div>
           </>}
     </div>
   </div>
@@ -97,8 +110,9 @@ export function EmployeeProfileForm({
 }: ProfileFormProps) {
   const [requestMessage, setRequestMessage] = useState('')
   const input = (label: string, key: keyof EmployeeProfile, placeholder: string) => (
-    <label className="field" key={key}><span>{label} <b className="required">*</b></span>
-      <input required type="text" value={profile[key]} placeholder={placeholder} onChange={(event) => setProfile((current) => ({ ...current, [key]: event.target.value }))} />
+    <label className="field" key={key}><span>{label} {(key !== 'phone' || profile.phone) && <b className="required">*</b>}</span>
+      <input required={key !== 'phone' || Boolean(profile.phone)} readOnly={key === 'phone'} type="text" value={profile[key]} placeholder={placeholder} onChange={(event) => setProfile((current) => ({ ...current, [key]: event.target.value }))} />
+      {key === 'phone' && <small>تعديل رقم الهاتف المرتبط بتسجيل الدخول يتم عن طريق المشرف.</small>}
     </label>
   )
   return <form className="panel profile-panel" onSubmit={onSave}>

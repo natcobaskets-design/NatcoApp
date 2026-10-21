@@ -7,8 +7,15 @@ import {
 export type EmployeeEntry = {
   email: string
   employeeCode: string
+  name?: string
+  phone?: string
+  whatsapp?: string
   active: boolean
   company?: string
+  branch?: string
+  province?: string
+  address?: string
+  coordinates?: string
   monthlySpendingLimit?: number
   currentMonthlySpent?: number
   spendingPeriod?: string
@@ -91,18 +98,29 @@ export function sapCompletedOrdersToCsv(orders: Order[], products: CatalogProduc
   return encodeCsv(headers, rows)
 }
 
-export function printCompletedOrders(orders: Order[], products: CatalogProduct[]): void {
-  const completed = orders.filter((order) => order.status === 'fulfilled')
-  const printWindow = window.open('', '_blank')
-  if (!printWindow) throw new Error('تعذر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.')
-  printWindow.opener = null
+export function printOrderReport(orders: Order[], products: CatalogProduct[]): void {
+  const printFrame = document.createElement('iframe')
+  printFrame.setAttribute('title', 'تقرير طلبات ناتكو للطباعة')
+  printFrame.style.position = 'fixed'
+  printFrame.style.width = '1px'
+  printFrame.style.height = '1px'
+  printFrame.style.opacity = '0'
+  printFrame.style.pointerEvents = 'none'
+  printFrame.style.insetInlineStart = '-10000px'
+  document.body.append(printFrame)
+  const printDocument = printFrame.contentDocument
+  const printWindow = printFrame.contentWindow
+  if (!printDocument || !printWindow) {
+    printFrame.remove()
+    throw new Error('تعذر تجهيز صفحة الطباعة. أعد المحاولة أو اسمح بالطباعة من إعدادات المتصفح.')
+  }
   const escapeHtml = (value: string | number) => String(value).replace(/[&<>"']/g, (character) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[character] ?? character)
   const productNames = new Map(products.map((product) => [product.id, product.name]))
-  const content = completed.map((order) => `
+  const content = orders.map((order) => `
     <article>
-      <h2>${escapeHtml(order.reference)} — ${escapeHtml(order.profile.name)}</h2>
+      <header><h2>${escapeHtml(order.reference)} — ${escapeHtml(order.profile.name)}</h2><strong>${escapeHtml(orderStatusLabels[order.status])}</strong></header>
       <p>الكود: ${escapeHtml(order.profile.employeeCode)} | الشركة: ${escapeHtml(order.profile.company)} | فرع الاستلام: ${escapeHtml(order.pickupBranch ?? order.profile.branch)}</p>
       <table><thead><tr><th>كود الصنف</th><th>الصنف</th><th>الكمية</th><th>سعر الوحدة (ر.ي)</th><th>الإجمالي (ر.ي)</th></tr></thead><tbody>
       ${Object.entries(order.items).filter(([, amount]) => amount > 0).map(([id, amount]) => {
@@ -113,19 +131,40 @@ export function printCompletedOrders(orders: Order[], products: CatalogProduct[]
       }).join('')}
       </tbody></table><strong>إجمالي الطلب: ${escapeHtml(order.totalAmount ?? '—')} ر.ي</strong>
     </article>`).join('')
-  printWindow.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>طلبات مكتملة — SAP</title><style>
-    body{font:14px Arial,sans-serif;margin:24px;color:#182344}h1{font-size:22px}article{break-inside:avoid;border:1px solid #ccd2df;padding:16px;margin:16px 0}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #ccd2df;padding:7px;text-align:right}th{background:#f1f3f8}@media print{button{display:none}}
-    </style></head><body><h1>طلبات ناتكو المكتملة — كشف إدخال SAP</h1><p>تاريخ الطباعة: ${escapeHtml(new Date().toLocaleString('ar-YE'))}</p>${content || '<p>لا توجد طلبات مكتملة للتصدير.</p>'}<button onclick="window.print()">طباعة / حفظ PDF</button></body></html>`)
-  printWindow.document.close()
+  printDocument.open()
+  printDocument.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>تقرير طلبات ناتكو</title><style>
+    body{font:14px Arial,sans-serif;margin:24px;color:#182344}h1{font-size:22px}article{break-inside:avoid;border:1px solid #ccd2df;padding:16px;margin:16px 0}header{display:flex;align-items:center;justify-content:space-between;gap:12px}header strong{font-size:12px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #ccd2df;padding:7px;text-align:right}th{background:#f1f3f8}@media print{body{margin:12mm}article{break-inside:avoid}}
+    </style></head><body><h1>تقرير طلبات ناتكو الكامل</h1><p>عدد الطلبات: ${orders.length} · تاريخ الطباعة: ${escapeHtml(new Date().toLocaleString('ar-YE'))}</p>${content || '<p>لا توجد طلبات للطباعة.</p>'}</body></html>`)
+  printDocument.close()
+  let removed = false
+  const removeFrame = () => {
+    if (removed) return
+    removed = true
+    window.setTimeout(() => printFrame.remove(), 1000)
+  }
+  printWindow.addEventListener('afterprint', removeFrame, { once: true })
+  window.setTimeout(() => {
+    if (!printFrame.isConnected) return
+    printWindow.focus()
+    printWindow.print()
+    window.setTimeout(removeFrame, 60_000)
+  }, 250)
 }
 
 export function employeesToCsv(employees: EmployeeEntry[]): string {
   return encodeCsv(
-    ['البريد الإلكتروني', 'الكود الوظيفي', 'الشركة', 'السقف الشهري (ر.ي)', 'الإنفاق الحالي (ر.ي)', 'فترة الإنفاق', 'الحالة'],
+    ['البريد الإلكتروني', 'الاسم', 'الكود الوظيفي', 'الشركة', 'الفرع', 'المحافظة', 'الهاتف', 'واتساب', 'العنوان', 'الإحداثيات', 'السقف الشهري (ر.ي)', 'الإنفاق الحالي (ر.ي)', 'فترة الإنفاق', 'الحالة'],
     employees.map((employee) => [
       employee.email,
+      employee.name ?? '',
       employee.employeeCode,
       employee.company ?? '',
+      employee.branch ?? '',
+      employee.province ?? '',
+      employee.phone ?? '',
+      employee.whatsapp ?? '',
+      employee.address ?? '',
+      employee.coordinates ?? '',
       employee.monthlySpendingLimit ?? '',
       employee.currentMonthlySpent ?? 0,
       employee.spendingPeriod ?? '',
@@ -151,6 +190,7 @@ export function filterEmployees(employees: EmployeeEntry[], search: string): Emp
   return employees.filter((employee) => [
     employee.email,
     employee.employeeCode,
+    employee.phone ?? '',
     employee.company ?? '',
     employee.active ? 'معتمد active' : 'موقوف inactive',
   ].some((value) => value.toLocaleLowerCase().includes(term)))
@@ -172,7 +212,10 @@ export async function shareOrDownloadCsv(filename: string, csv: string, preferSh
   const link = document.createElement('a')
   link.href = url
   link.download = filename
+  link.style.display = 'none'
+  document.body.append(link)
   link.click()
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
   return 'downloaded'
 }

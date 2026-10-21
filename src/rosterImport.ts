@@ -18,6 +18,10 @@ export type RosterImportRow = {
 export type RosterImportPreview = { rows: RosterImportRow[]; issues: string[]; totalRows: number }
 export const rosterImportLimit = 10_000
 
+export function normalizePhone(phone: string): string {
+  return phone.replace(/\D/g, '')
+}
+
 function parseCsvRows(content: string): string[][] {
   const rows: string[][] = []
   let row: string[] = []
@@ -84,6 +88,7 @@ export function parseRosterCsv(content: string): RosterImportPreview {
     const address = addressIndex < 0 ? '' : fields[addressIndex]?.trim() ?? ''
     const coordinates = coordinatesIndex < 0 ? '' : fields[coordinatesIndex]?.trim() ?? ''
     const phone = phoneIndex < 0 ? '' : fields[phoneIndex]?.trim() ?? ''
+    const phoneLookup = normalizePhone(phone)
     const whatsapp = whatsappIndex < 0 ? '' : fields[whatsappIndex]?.trim() ?? ''
     const limitText = limitIndex < 0 ? '' : fields[limitIndex]?.trim() ?? ''
     const spentText = spentIndex < 0 ? '' : fields[spentIndex]?.trim() ?? ''
@@ -107,6 +112,11 @@ export function parseRosterCsv(content: string): RosterImportPreview {
     if (name.length > 120 || company.length > 80 || branch.length > 80 || province.length > 80 ||
       address.length > 500 || coordinates.length > 100 || phone.length > 30 || whatsapp.length > 30) {
       issues.push(`الصف ${line}: تجاوز أحد الحقول طوله المسموح (الاسم 120، الشركة/الفرع/المحافظة 80، العنوان 500، الإحداثيات 100، الهاتف 30 حرفاً).`)
+      return
+    }
+    if (phone && (!/^\+?[\d\s()-]{8,30}$/.test(phone) ||
+      phoneLookup.length < 8 || phoneLookup.length > 18)) {
+      issues.push(`الصف ${line}: رقم الهاتف يجب أن يتضمن من 8 إلى 18 رقماً مع رمز الدولة.`)
       return
     }
     if ((limitText && (!Number.isFinite(monthlySpendingLimit) || Number(monthlySpendingLimit) < 0)) ||
@@ -139,13 +149,24 @@ export function parseRosterCsv(content: string): RosterImportPreview {
     })
   })
   const emailCounts = new Map<string, number>()
+  const employeeCodeCounts = new Map<string, number>()
+  const phoneCounts = new Map<string, number>()
   candidates.forEach((candidate) => {
     emailCounts.set(candidate.email, (emailCounts.get(candidate.email) ?? 0) + 1)
+    employeeCodeCounts.set(candidate.employeeCode, (employeeCodeCounts.get(candidate.employeeCode) ?? 0) + 1)
+    if (candidate.phone) {
+      const phone = normalizePhone(candidate.phone)
+      phoneCounts.set(phone, (phoneCounts.get(phone) ?? 0) + 1)
+    }
   })
   const rows = candidates.filter((candidate) => {
     const duplicateEmail = (emailCounts.get(candidate.email) ?? 0) > 1
     if (duplicateEmail) issues.push(`الصف ${candidate.line}: البريد مكرر في الملف.`)
-    return !duplicateEmail
+    const duplicateCode = (employeeCodeCounts.get(candidate.employeeCode) ?? 0) > 1
+    if (duplicateCode) issues.push(`الصف ${candidate.line}: الكود الوظيفي مكرر في الملف.`)
+    const duplicatePhone = candidate.phone && (phoneCounts.get(normalizePhone(candidate.phone)) ?? 0) > 1
+    if (duplicatePhone) issues.push(`الصف ${candidate.line}: رقم الهاتف مكرر في الملف.`)
+    return !duplicateEmail && !duplicateCode && !duplicatePhone
   })
   return { rows, issues, totalRows: csvRows.length - 1 }
 }

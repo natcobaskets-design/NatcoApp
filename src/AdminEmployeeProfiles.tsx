@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import type { User } from 'firebase/auth'
-import { collection, doc, getDocs, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore'
-import { Ban, Check, Edit3, Search, Save, Trash2, Users, X } from 'lucide-react'
+import { sendPasswordResetEmail, type User } from 'firebase/auth'
+import { collection, deleteField, doc, getDocs, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore'
+import { Ban, Check, Edit3, KeyRound, Search, Save, Trash2, Users, X } from 'lucide-react'
 import { formatYER, type EmployeeProfile, type OrganizationOptions } from './domain'
-import { firebaseErrorMessage, firestore } from './firebase'
+import { firebaseAuth, firebaseErrorMessage, firestore } from './firebase'
+import { normalizePhone } from './rosterImport'
 
 type Props = {
   user: User
@@ -54,6 +55,7 @@ function parseRosterProfile(id: string, data: Record<string, unknown>): Employee
 }
 
 export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: Props) {
+  const [currentPeriod] = useState(() => new Date().toISOString().slice(0, 7))
   const [records, setRecords] = useState<EmployeeRecord[]>([])
   const [search, setSearch] = useState('')
   const [selectedEmail, setSelectedEmail] = useState('')
@@ -75,13 +77,17 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
     const term = search.trim().toLocaleLowerCase()
     if (!term) return records
     return records.filter((record) => [
-      record.email, record.employeeCode, record.name, record.company, record.branch, record.province,
+      record.email, record.employeeCode, record.phone, record.name, record.company, record.branch, record.province,
     ].some((value) => (value ?? '').toLocaleLowerCase().includes(term)))
   }, [records, search])
 
   function chooseEmployee(record: EmployeeRecord) {
     setSelectedEmail(record.email)
-    setDraft({ ...record })
+    setDraft({
+      ...record,
+      currentMonthlySpent: record.spendingPeriod === currentPeriod ? record.currentMonthlySpent : 0,
+      spendingPeriod: currentPeriod,
+    })
     setEditorOpen(true)
     if (!firestore) return
     void (async () => {
@@ -94,7 +100,6 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
           name: typeof saved.name === 'string' ? saved.name : current.name,
           address: typeof saved.address === 'string' ? saved.address : current.address,
           coordinates: typeof saved.coordinates === 'string' ? saved.coordinates : current.coordinates,
-          phone: typeof saved.phone === 'string' ? saved.phone : current.phone,
           whatsapp: typeof saved.whatsapp === 'string' ? saved.whatsapp : current.whatsapp,
         } : current)
       } catch (error) {
@@ -107,25 +112,49 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
   async function saveEmployee(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!firestore || !selectedEmail) return
-    if (!draft.employeeCode.trim() || !draft.company || !draft.branch || !draft.province ||
+    const normalizedPhone = normalizePhone(draft.phone)
+    if (!draft.employeeCode.trim() || draft.employeeCode.trim().length > 80 ||
+      !draft.name.trim() || draft.name.trim().length > 120 ||
+      !draft.company || !draft.branch || !draft.province ||
       (draft.monthlySpendingLimit !== undefined &&
-        (!Number.isFinite(draft.monthlySpendingLimit) || draft.monthlySpendingLimit < 0)) ||
-      !Number.isFinite(draft.currentMonthlySpent) || draft.currentMonthlySpent < 0 ||
-      !/^\+?[\d\s()-]{8,18}$/.test(draft.phone) ||
-      !/^\+?[\d\s()-]{8,18}$/.test(draft.whatsapp)) {
-      onNotice('أكمل الحقول الوظيفية، وتحقق من السقف والإنفاق وأرقام التواصل.')
+        (!Number.isFinite(draft.monthlySpendingLimit) || draft.monthlySpendingLimit < 0 || draft.monthlySpendingLimit > 1_000_000_000)) ||
+      !Number.isFinite(draft.currentMonthlySpent) || draft.currentMonthlySpent < 0 || draft.currentMonthlySpent > 1_000_000_000 ||
+      !/^\+?[\d\s()-]{8,30}$/.test(draft.phone) ||
+      normalizedPhone.length < 8 || normalizedPhone.length > 18 ||
+      !/^\+?[\d\s()-]{8,30}$/.test(draft.whatsapp) ||
+      normalizePhone(draft.whatsapp).length < 8 || normalizePhone(draft.whatsapp).length > 18 ||
+      draft.address.trim().length > 500 || draft.coordinates.trim().length > 100 ||
+      !organizationOptions.companies.find((company) => company.name === draft.company)?.branches.includes(draft.branch) ||
+      !organizationOptions.branches.includes(draft.province)) {
+      onNotice('تحقق من الاسم والرقم الوظيفي والشركة والفرع والمحافظة والسقف والإنفاق والعنوان والإحداثيات وأرقام التواصل.')
       return
     }
     setWorking(true)
     try {
+      const matchingCodes = await getDocs(query(
+        collection(firestore, 'employee_roster'),
+        where('employeeCode', '==', draft.employeeCode.trim()),
+      ))
+      if (matchingCodes.docs.some((item) => item.id !== selectedEmail)) {
+        onNotice('هذا الرقم الوظيفي مرتبط بسجل موظف آخر.')
+        return
+      }
+      const matchingPhones = await getDocs(query(
+        collection(firestore, 'employee_roster'),
+        where('phoneLookup', '==', normalizedPhone),
+      ))
+      if (matchingPhones.docs.some((item) => item.id !== selectedEmail)) {
+        onNotice('رقم الهاتف مرتبط بسجل موظف آخر.')
+        return
+      }
       const profilesQuery = await getDocs(query(collection(firestore, 'employees'), where('email', '==', selectedEmail)))
-      const period = new Date().toISOString().slice(0, 7)
+      const period = currentPeriod
       const protectedFields = {
         employeeCode: draft.employeeCode.trim(),
         company: draft.company,
         branch: draft.branch,
         province: draft.province,
-        ...(draft.monthlySpendingLimit === undefined ? {} : { monthlySpendingLimit: draft.monthlySpendingLimit }),
+        monthlySpendingLimit: draft.monthlySpendingLimit ?? deleteField(),
         currentMonthlySpent: draft.currentMonthlySpent,
         spendingPeriod: period,
       }
@@ -136,6 +165,7 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         address: draft.address.trim(),
         coordinates: draft.coordinates.trim(),
         phone: draft.phone.trim(),
+        phoneLookup: normalizedPhone,
         whatsapp: draft.whatsapp.trim(),
         active: draft.active,
         approvedBy: user.uid,
@@ -158,9 +188,26 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
       await batch.commit()
       setDraft((current) => ({ ...current, spendingPeriod: period }))
       setEditorOpen(false)
-      onNotice(`تم تحديث الملف الوظيفي للموظف ${selectedEmail}.`)
+      onNotice(`تم حفظ بيانات ${draft.name.trim()}، ورقم الهاتف ورابط إعادة تعيين كلمة المرور متاحان في هذا الملف.`)
     } catch (error) {
       console.error(`Unable to save employee profile ${selectedEmail}.`, error)
+      onNotice(firebaseErrorMessage(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  async function sendEmployeePasswordReset() {
+    if (!firebaseAuth || !selectedEmail) {
+      onNotice('إرسال رابط إعادة التعيين غير متاح حالياً.')
+      return
+    }
+    setWorking(true)
+    try {
+      await sendPasswordResetEmail(firebaseAuth, selectedEmail)
+      onNotice(`تم إرسال رابط إعادة تعيين كلمة المرور إلى ${selectedEmail}.`)
+    } catch (error) {
+      console.error(`Unable to send a password reset email to ${selectedEmail}.`, error)
       onNotice(firebaseErrorMessage(error))
     } finally {
       setWorking(false)
@@ -234,11 +281,11 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
   }
 
   return <section className="admin-panel employee-profile-management">
-    <div className="admin-panel-heading"><div><h3>إدارة الملفات الوظيفية</h3><p>ابحث بالبريد أو الاسم أو الرقم الوظيفي؛ بيانات الشركة والفرع والسقف تحت إدارة المشرف حصراً.</p></div><span>{records.length} موظف</span></div>
-    <label className="admin-search"><Search size={16} /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث بالبريد أو الاسم أو الرقم الوظيفي أو الفرع" /></label>
+    <div className="admin-panel-heading"><div><h3>سجل الموظفين وتعديل بياناتهم</h3><p>تُدار بيانات الموظف ورقم التواصل وإعادة تعيين كلمة المرور من هذه القائمة الموحدة.</p></div><span>{records.length} موظف</span></div>
+    <label className="admin-search"><Search size={16} /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث بالبريد أو الاسم أو الرقم الوظيفي أو الهاتف" /></label>
     <div className="employee-profile-results">{filtered.map((record) => <article className="employee-profile-row" key={record.email}>
-      <div><strong>{record.name || 'اسم غير متوفر'}</strong><span>الكود الوظيفي: {record.employeeCode || 'غير محدد'}</span></div>
-      <button type="button" className="employee-profile-open" onClick={() => chooseEmployee(record)}><Edit3 size={15} /> فتح الملف</button>
+      <div><strong>{record.name || 'اسم غير متوفر'}</strong><span>الكود الوظيفي: {record.employeeCode || 'غير محدد'} · {record.phone || 'لا يوجد هاتف'}</span><small dir="ltr">{record.email}</small></div>
+      <button type="button" className="employee-profile-open" onClick={() => chooseEmployee(record)}><Edit3 size={15} /> تعديل الموظف</button>
     </article>)}{!filtered.length && <div className="admin-empty"><Users size={26} /><strong>لا توجد سجلات مطابقة</strong></div>}</div>
     {editorOpen && selectedEmail && <div className="admin-modal-backdrop employee-editor-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !working) setEditorOpen(false) }}>
       <form className="employee-profile-admin-form employee-profile-editor" role="dialog" aria-modal="true" aria-labelledby="employee-editor-title" onSubmit={(event) => void saveEmployee(event)}>
@@ -252,8 +299,9 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         <label className="field"><span>الإنفاق الشهري الحالي (ر.ي)</span><input required type="number" min="0" value={draft.currentMonthlySpent} onChange={(event) => setDraft((current) => ({ ...current, currentMonthlySpent: Number(event.target.value) }))} /></label>
         <label className="field"><span>العنوان</span><input value={draft.address} onChange={(event) => setDraft((current) => ({ ...current, address: event.target.value }))} /></label>
         <label className="field"><span>الإحداثيات</span><input value={draft.coordinates} onChange={(event) => setDraft((current) => ({ ...current, coordinates: event.target.value }))} /></label>
-        <label className="field"><span>الهاتف</span><input value={draft.phone} onChange={(event) => setDraft((current) => ({ ...current, phone: event.target.value }))} /></label>
+        <label className="field"><span>هاتف الموظف المسجل</span><input required type="tel" dir="ltr" value={draft.phone} onChange={(event) => setDraft((current) => ({ ...current, phone: event.target.value }))} /></label>
         <label className="field"><span>واتساب</span><input value={draft.whatsapp} onChange={(event) => setDraft((current) => ({ ...current, whatsapp: event.target.value }))} /></label>
+        <div className="employee-password-help"><strong><KeyRound size={15} /> تسجيل الدخول وكلمة المرور</strong><small>البريد هو معرّف الدخول الحالي. لا يمكن عرض كلمة المرور المحفوظة؛ أرسل للموظف رابطاً آمناً لاختيار كلمة مرور جديدة. رقم الهاتف محفوظ للتواصل ولا يعمل كاسم دخول في الوضع الحالي.</small><button type="button" className="admin-export-button" disabled={working || !draft.active} onClick={() => void sendEmployeePasswordReset()}>إرسال رابط إعادة تعيين كلمة المرور</button></div>
         <small>الإنفاق: {formatYER(draft.currentMonthlySpent)} · فترة الشهر: {draft.spendingPeriod || 'غير محددة'}</small>
         <div className="employee-profile-editor-actions">
           <button className="admin-add-button" disabled={working}><Save size={14} /> حفظ</button>

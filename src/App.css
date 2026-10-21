@@ -304,7 +304,7 @@
 .page-footer { min-height: 36px; flex: 0 0 36px; margin-top: auto; border-top: 1px solid #eceef2; display: flex; align-items: center; justify-content: space-between; color: #9ba1af; font-size: 8px; }
 .page-footer > span:last-child { display: flex; align-items: center; gap: 5px; }
 .page-footer i { width: 5px; height: 5px; background: var(--orange); border-radius: 50%; }
-.toast { position: fixed; z-index: 20; bottom: 23px; left: 25px; max-width: min(420px, calc(100vw - 32px)); min-height: 48px; padding: 9px 12px; background: #fff; border: 1px solid #e9ebef; border-radius: 9px; box-shadow: 0 8px 28px #121c3b1b; display: flex; align-items: center; gap: 9px; color: #49536b; font-size: 10px; animation: toast-in .22s ease-out; }
+.toast { position: fixed; z-index: 20; bottom: 23px; left: 25px; max-width: min(420px, calc(100vw - 32px)); max-height: min(45vh, 280px); overflow-y: auto; white-space: pre-line; min-height: 48px; padding: 9px 12px; background: #fff; border: 1px solid #e9ebef; border-radius: 9px; box-shadow: 0 8px 28px #121c3b1b; display: flex; align-items: center; gap: 9px; color: #49536b; font-size: 10px; animation: toast-in .22s ease-out; }
 .toast-mark { width: 25px; height: 25px; display: grid; place-items: center; flex-shrink: 0; color: #248458; background: #eaf6ef; border-radius: 50%; }
 .toast button { margin-right: 4px; display: grid; place-items: center; border: 0; color: #999faf; background: none; padding: 4px; }
 .mobile-nav { display: none; }
