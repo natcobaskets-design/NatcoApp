@@ -364,7 +364,7 @@ function App() {
     })
     const unsubscribeSettings = onSnapshot(doc(firestore, 'admin_settings', 'basket_selection'), (snapshot) => {
       const maximum = snapshot.exists() ? snapshot.data().maxTotalPerEmployee : 2
-      if (Number.isInteger(maximum) && Number(maximum) >= 1 && Number(maximum) <= 10) {
+      if (Number.isInteger(maximum) && Number(maximum) >= 1 && Number(maximum) <= 2) {
         setBasketSelectionSettings({ maxTotalPerEmployee: Number(maximum) })
       } else {
         setBasketSelectionSettings(defaultBasketSelectionSettings)

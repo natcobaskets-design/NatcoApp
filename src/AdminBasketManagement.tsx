@@ -58,7 +58,7 @@ export function AdminBasketManagement({ products, onNotice, userId }: Props) {
     })
     const stopSettings = onSnapshot(doc(database, 'admin_settings', 'basket_selection'), (snapshot) => {
       const maximum = snapshot.exists() ? snapshot.data().maxTotalPerEmployee : 2
-      setMaxTotal(Number.isInteger(maximum) && Number(maximum) >= 1 && Number(maximum) <= 10
+      setMaxTotal(Number.isInteger(maximum) && Number(maximum) >= 1 && Number(maximum) <= 2
         ? Number(maximum)
         : defaultBasketSelectionSettings.maxTotalPerEmployee)
     }, (error) => {
@@ -120,8 +120,8 @@ export function AdminBasketManagement({ products, onNotice, userId }: Props) {
 
   async function saveGlobalMaximum(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!firestore || !Number.isInteger(maxTotal) || maxTotal < 1 || maxTotal > 10) {
-      onNotice('الحد الإجمالي يجب أن يكون بين ١ و١٠ سلال.')
+    if (!firestore || !Number.isInteger(maxTotal) || maxTotal < 1 || maxTotal > 2) {
+      onNotice('الحد الإجمالي يجب أن يكون سلة أو سلتين.')
       return
     }
     if (baskets.some((basket) => basket.maxPerEmployee > maxTotal)) {
@@ -162,7 +162,7 @@ export function AdminBasketManagement({ products, onNotice, userId }: Props) {
   return <section className="admin-panel basket-management">
     <div className="admin-panel-heading"><div><h3>إدارة السلال الغذائية</h3><p>حدد أسماء السلال وأنواعها وحدود الاختيار والأصناف التي تظهر داخل كل سلة.</p></div></div>
     <form className="basket-limit-form" onSubmit={(event) => void saveGlobalMaximum(event)}>
-      <label className="field"><span>الحد الإجمالي للسلال لكل موظف</span><input type="number" min="1" max="10" value={maxTotal} onChange={(event) => setMaxTotal(Number(event.target.value))} /></label>
+      <label className="field"><span>الحد الإجمالي للسلال لكل موظف</span><input type="number" min="1" max="2" value={maxTotal} onChange={(event) => setMaxTotal(Number(event.target.value))} /></label>
       <button className="admin-add-button" disabled={working}><Save size={14} /> حفظ الحد الإجمالي</button>
     </form>
     <form className="basket-definition-form" onSubmit={(event) => void saveBasket(event)}>

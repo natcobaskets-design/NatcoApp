@@ -31,26 +31,34 @@ service cloud.firestore {
       return /databases/$(database)/documents/employee_auth_lookup/$(authEmail());
     }
 
+    function rosterPathFor(email) {
+      return /databases/$(database)/documents/employee_roster/$(email);
+    }
+
     function hasEmployeePasswordAlias() {
       return signedIn()
         && authEmail() is string
         && authEmail().matches('^employee\\.[0-9]{8,15}@[^@]+\\.firebaseapp\\.com$');
     }
 
-    function hasEmployeePasswordLogin() {
-      return hasEmployeePasswordAlias()
-        && exists(employeeAuthLookupPath())
-        && get(employeeAuthLookupPath()).data.authEmail == authEmail()
-        && get(employeeAuthLookupPath()).data.email is string
-        && get(employeeAuthLookupPath()).data.phoneNumber is string
-        && get(employeeAuthLookupPath()).data.phoneDigits is string
-        && get(employeeAuthLookupPath()).data.phoneDigits.matches('^[0-9]{8,15}$')
-        && get(employeeAuthLookupPath()).data.phoneNumber
-          == '+' + get(employeeAuthLookupPath()).data.phoneDigits
+    function validEmployeePasswordLookup(lookup) {
+      let phoneDigits = lookup.get('phoneDigits', '');
+      return lookup.get('authEmail', '') == authEmail()
+        && lookup.get('email', '') is string
+        && lookup.get('phoneNumber', '') is string
+        && phoneDigits is string
+        && phoneDigits.matches('^[0-9]{8,15}$')
+        && lookup.get('phoneNumber', '') == '+' + phoneDigits
         && authEmail().matches(
-          '^employee\\.' + get(employeeAuthLookupPath()).data.phoneDigits
-            + '@[^@]+\\.firebaseapp\\.com$'
+          '^employee\\.' + phoneDigits + '@[^@]+\\.firebaseapp\\.com$'
         );
+    }
+
+    function hasEmployeePasswordLogin() {
+      let lookupPath = employeeAuthLookupPath();
+      return hasEmployeePasswordAlias()
+        && exists(lookupPath)
+        && validEmployeePasswordLookup(get(lookupPath).data);
     }
 
     function employeeEmail() {
@@ -62,7 +70,7 @@ service cloud.firestore {
     }
 
     function rosterPath() {
-      return /databases/$(database)/documents/employee_roster/$(employeeEmail());
+      return rosterPathFor(employeeEmail());
     }
 
     function hasPhoneLookup() {
@@ -81,25 +89,25 @@ service cloud.firestore {
         && request.auth.token.get('email_verified', false) == true;
     }
 
-    function hasActiveRosterEntry() {
+    function isApprovedEmployeeForEmail(email) {
+      let path = rosterPathFor(email);
       return signedIn()
-        && exists(rosterPath())
-        && get(rosterPath()).data.active == true
+        && exists(path)
+        && get(path).data.active == true
         && (hasVerifiedEmail()
           || (hasEmployeePasswordLogin()
-            && get(rosterPath()).data.get('phoneE164', '')
+            && get(path).data.get('phoneE164', '')
               == get(employeeAuthLookupPath()).data.phoneNumber)
           || (hasPhoneLookup()
-            && get(rosterPath()).data.get('phoneE164', '') == authPhone()));
+            && get(path).data.get('phoneE164', '') == authPhone()));
+    }
+
+    function hasActiveRosterEntry() {
+      return isApprovedEmployeeForEmail(employeeEmail());
     }
 
     function isApprovedEmployee() {
       return hasActiveRosterEntry();
-    }
-
-    function matchesEmployeeCode(code) {
-      return isApprovedEmployee()
-        && get(rosterPath()).data.employeeCode == code;
     }
 
     function validBasketCounts(baskets) {
@@ -117,15 +125,7 @@ service cloud.firestore {
 
     function countBasketSelections(ids, basketId) {
       return (ids.size() > 0 && ids[0] == basketId ? 1 : 0)
-        + (ids.size() > 1 && ids[1] == basketId ? 1 : 0)
-        + (ids.size() > 2 && ids[2] == basketId ? 1 : 0)
-        + (ids.size() > 3 && ids[3] == basketId ? 1 : 0)
-        + (ids.size() > 4 && ids[4] == basketId ? 1 : 0)
-        + (ids.size() > 5 && ids[5] == basketId ? 1 : 0)
-        + (ids.size() > 6 && ids[6] == basketId ? 1 : 0)
-        + (ids.size() > 7 && ids[7] == basketId ? 1 : 0)
-        + (ids.size() > 8 && ids[8] == basketId ? 1 : 0)
-        + (ids.size() > 9 && ids[9] == basketId ? 1 : 0);
+        + (ids.size() > 1 && ids[1] == basketId ? 1 : 0);
     }
 
     function validBasketAt(ids, index) {
@@ -149,24 +149,16 @@ service cloud.firestore {
         : 2;
       return ids is list
         && ids.size() > 0
-        && ids.size() <= 10
+        && ids.size() <= 2
         && maximum is int
         && maximum >= 1
-        && maximum <= 10
+        && maximum <= 2
         && ids.size() <= maximum
         && baskets is map
         && baskets.size() > 0
         && baskets.size() <= 10
         && (ids.size() <= 0 || validBasketAt(ids, 0))
-        && (ids.size() <= 1 || validBasketAt(ids, 1))
-        && (ids.size() <= 2 || validBasketAt(ids, 2))
-        && (ids.size() <= 3 || validBasketAt(ids, 3))
-        && (ids.size() <= 4 || validBasketAt(ids, 4))
-        && (ids.size() <= 5 || validBasketAt(ids, 5))
-        && (ids.size() <= 6 || validBasketAt(ids, 6))
-        && (ids.size() <= 7 || validBasketAt(ids, 7))
-        && (ids.size() <= 8 || validBasketAt(ids, 8))
-        && (ids.size() <= 9 || validBasketAt(ids, 9));
+        && (ids.size() <= 1 || validBasketAt(ids, 1));
     }
 
     function validMonthlySpendMutation(uid, oldSpent) {
@@ -382,6 +374,122 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    function validOrderCreate(orderId) {
+      let order = request.resource.data;
+      let email = employeeEmail();
+      let employeePath = rosterPathFor(email);
+      let roster = get(employeePath).data;
+      let afterRoster = getAfter(employeePath).data;
+      let profile = order.profile;
+      let oldSpent = roster.get('currentMonthlySpent', 0);
+      let totalAmount = order.get('totalAmount', -1);
+      let validBaskets = order.keys().hasAny(['basketSelections'])
+        ? validBasketSelection(order.basketSelections, order.baskets)
+        : validBasketCounts(order.baskets);
+      return isApprovedEmployee()
+        && order.keys().hasAll([
+          'reference', 'uid', 'email', 'employeeCode', 'profile',
+          'baskets', 'items', 'itemDetails', 'excluded',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && order.keys().hasOnly([
+          'reference', 'uid', 'email', 'employeeCode', 'profile',
+          'baskets', 'items', 'itemDetails', 'excluded', 'status',
+          'createdAt', 'updatedAt', 'pickupBranch', 'totalAmount', 'currency',
+          'basketSelections', 'editCount'
+        ])
+        && order.uid == request.auth.uid
+        && order.email == email
+        && order.employeeCode == roster.get('employeeCode', '')
+        && profile.email == email
+        && profile.employeeCode == order.employeeCode
+        && profile.company == roster.get('company', '')
+        && profile.get('monthlySpendingLimit', -1)
+          == roster.get('monthlySpendingLimit', -1)
+        && profile.get('currentMonthlySpent', 0) == oldSpent
+        && profile.get('spendingPeriod', '') == roster.get('spendingPeriod', '')
+        && (!roster.keys().hasAny(['monthlySpendingLimit'])
+          || (totalAmount is number
+            && totalAmount >= 0
+            && totalAmount <= roster.monthlySpendingLimit - oldSpent))
+        && (!order.keys().hasAny(['totalAmount'])
+          || (totalAmount is number && totalAmount >= 0 && order.currency == 'YER'))
+        && (!order.keys().hasAny(['pickupBranch'])
+          || (order.pickupBranch is string
+            && order.pickupBranch.size() > 0
+            && order.pickupBranch.size() <= 80))
+        && (!order.keys().hasAny(['totalAmount'])
+          || (afterRoster.get('currentMonthlySpent', 0) == oldSpent + totalAmount
+            && afterRoster.lastSpendOrderId == orderId))
+        && validBaskets
+        && order.items is map
+        && order.items.size() <= 50
+        && order.itemDetails is map
+        && order.itemDetails.size() <= 50
+        && order.excluded is list
+        && order.excluded.size() <= 50
+        && order.status == 'received'
+        && order.get('editCount', 0) == 0
+        && order.createdAt == request.time
+        && order.updatedAt == request.time;
+    }
+
+    function validEmployeeOrderEdit(orderId) {
+      let order = request.resource.data;
+      let previousOrder = resource.data;
+      let email = employeeEmail();
+      let employeePath = rosterPathFor(email);
+      let roster = get(employeePath).data;
+      let afterRoster = getAfter(employeePath).data;
+      let profile = order.profile;
+      let totalAmount = order.get('totalAmount', -1);
+      let validBaskets = order.keys().hasAny(['basketSelections'])
+        ? validBasketSelection(order.basketSelections, order.baskets)
+        : validBasketCounts(order.baskets);
+      return isApprovedEmployeeForEmail(email)
+        && (previousOrder.uid == request.auth.uid || previousOrder.email == email)
+        && previousOrder.employeeCode == roster.get('employeeCode', '')
+        && previousOrder.status == 'received'
+        && order.status == previousOrder.status
+        && order.diff(previousOrder).affectedKeys().hasOnly([
+          'baskets', 'items', 'itemDetails', 'excluded', 'updatedAt',
+          'pickupBranch', 'totalAmount', 'currency', 'basketSelections',
+          'profile', 'editCount'
+        ])
+        && previousOrder.get('editCount', 0) == 0
+        && order.editCount == 1
+        && profile.diff(previousOrder.profile).affectedKeys().hasOnly([
+          'currentMonthlySpent', 'spendingPeriod', 'monthlySpendingLimit'
+        ])
+        && profile.get('email', '') == email
+        && profile.get('employeeCode', '') == previousOrder.employeeCode
+        && profile.get('company', '') == roster.get('company', '')
+        && profile.get('currentMonthlySpent', 0)
+          == roster.get('currentMonthlySpent', 0)
+        && profile.get('spendingPeriod', '') == afterRoster.get('spendingPeriod', '')
+        && profile.get('monthlySpendingLimit', -1)
+          == roster.get('monthlySpendingLimit', -1)
+        && validBaskets
+        && order.items is map
+        && order.items.size() <= 50
+        && order.excluded is list
+        && order.excluded.size() <= 50
+        && (!roster.keys().hasAny(['monthlySpendingLimit'])
+          || (totalAmount is number
+            && totalAmount >= 0
+            && totalAmount <= roster.monthlySpendingLimit
+              - roster.get('currentMonthlySpent', 0)
+              + previousOrder.get('totalAmount', 0)))
+        && (!order.keys().hasAny(['totalAmount'])
+          || (profile.get('currentMonthlySpent', 0)
+              == roster.get('currentMonthlySpent', 0)
+            && afterRoster.get('currentMonthlySpent', 0)
+              == roster.get('currentMonthlySpent', 0)
+                + totalAmount - previousOrder.get('totalAmount', 0)
+            && afterRoster.lastSpendOrderId == orderId))
+        && order.updatedAt == request.time;
+    }
+
     match /basket_types/{basketId} {
       allow get, list: if isAdmin() || isApprovedEmployee();
       allow create, update: if isAdmin()
@@ -400,7 +508,7 @@ service cloud.firestore {
         && request.resource.data.description.size() <= 160
         && request.resource.data.maxPerEmployee is int
         && request.resource.data.maxPerEmployee >= 0
-        && request.resource.data.maxPerEmployee <= 10
+        && request.resource.data.maxPerEmployee <= 2
         && request.resource.data.productIds is list
         && request.resource.data.productIds.size() <= 50
         && request.resource.data.active is bool
@@ -416,64 +524,7 @@ service cloud.firestore {
           && (resource.data.uid == request.auth.uid
             || resource.data.email == employeeEmail()));
 
-      allow create: if signedIn()
-        && request.resource.data.keys().hasAll([
-          'reference', 'uid', 'email', 'employeeCode', 'profile',
-          'baskets', 'items', 'itemDetails', 'excluded',
-          'status', 'createdAt', 'updatedAt'
-        ])
-        && request.resource.data.keys().hasOnly([
-          'reference', 'uid', 'email', 'employeeCode', 'profile',
-          'baskets', 'items', 'itemDetails', 'excluded', 'status',
-          'createdAt', 'updatedAt', 'pickupBranch', 'totalAmount', 'currency',
-          'basketSelections', 'editCount'
-        ])
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.email == employeeEmail()
-        && matchesEmployeeCode(request.resource.data.employeeCode)
-        && request.resource.data.profile.email == employeeEmail()
-        && request.resource.data.profile.employeeCode == request.resource.data.employeeCode
-        && request.resource.data.profile.company == get(rosterPath()).data.get('company', '')
-        && request.resource.data.profile.get('monthlySpendingLimit', -1)
-          == get(rosterPath()).data.get('monthlySpendingLimit', -1)
-        && request.resource.data.profile.get('currentMonthlySpent', 0)
-          == get(rosterPath()).data.get('currentMonthlySpent', 0)
-        && request.resource.data.profile.get('spendingPeriod', '')
-          == get(rosterPath()).data.get('spendingPeriod', '')
-        && (!get(rosterPath()).data.keys().hasAny(['company'])
-          || request.resource.data.profile.company == get(rosterPath()).data.company)
-        && (!get(rosterPath()).data.keys().hasAny(['monthlySpendingLimit'])
-          || (request.resource.data.totalAmount is number
-            && request.resource.data.totalAmount >= 0
-            && request.resource.data.totalAmount <= get(rosterPath()).data.monthlySpendingLimit
-              - get(rosterPath()).data.get('currentMonthlySpent', 0)))
-        && (!request.resource.data.keys().hasAny(['totalAmount'])
-          || (request.resource.data.totalAmount is number
-            && request.resource.data.totalAmount >= 0
-            && request.resource.data.currency == 'YER'))
-        && (!request.resource.data.keys().hasAny(['pickupBranch'])
-          || (request.resource.data.pickupBranch is string
-            && request.resource.data.pickupBranch.size() > 0
-            && request.resource.data.pickupBranch.size() <= 80))
-        && (!request.resource.data.keys().hasAny(['totalAmount'])
-          || (request.resource.data.profile.get('currentMonthlySpent', 0)
-              == get(rosterPath()).data.get('currentMonthlySpent', 0)
-            && getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
-              == get(rosterPath()).data.get('currentMonthlySpent', 0) + request.resource.data.totalAmount
-            && getAfter(rosterPath()).data.lastSpendOrderId == orderId))
-        && (request.resource.data.keys().hasAny(['basketSelections'])
-          ? validBasketSelection(request.resource.data.basketSelections, request.resource.data.baskets)
-          : validBasketCounts(request.resource.data.baskets))
-        && request.resource.data.items is map
-        && request.resource.data.items.size() <= 50
-        && request.resource.data.itemDetails is map
-        && request.resource.data.itemDetails.size() <= 50
-        && request.resource.data.excluded is list
-        && request.resource.data.excluded.size() <= 50
-        && request.resource.data.status == 'received'
-        && request.resource.data.get('editCount', 0) == 0
-        && request.resource.data.createdAt == request.time
-        && request.resource.data.updatedAt == request.time;
+      allow create: if signedIn() && validOrderCreate(orderId);
 
       allow update: if isAdmin()
         ? request.resource.data.diff(resource.data).affectedKeys()
@@ -488,58 +539,7 @@ service cloud.firestore {
           && getAfter(
             /databases/$(database)/documents/order_notifications/$(orderId)
           ).data.eventStatus == request.resource.data.status
-        : signedIn()
-          && (resource.data.uid == request.auth.uid
-            || resource.data.email == employeeEmail())
-          && matchesEmployeeCode(resource.data.employeeCode)
-          && resource.data.status == 'received'
-          && request.resource.data.status == resource.data.status
-          && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['baskets', 'items', 'itemDetails', 'excluded', 'updatedAt',
-              'pickupBranch', 'totalAmount', 'currency', 'basketSelections',
-              'profile', 'editCount'])
-          && resource.data.get('editCount', 0) == 0
-          && request.resource.data.editCount == 1
-          && request.resource.data.profile.diff(resource.data.profile)
-            .affectedKeys().hasOnly([
-              'currentMonthlySpent', 'spendingPeriod', 'monthlySpendingLimit'
-            ])
-          && request.resource.data.profile.get('email', '') == employeeEmail()
-          && request.resource.data.profile.get('employeeCode', '')
-            == resource.data.employeeCode
-          && request.resource.data.profile.get('company', '')
-            == get(rosterPath()).data.get('company', '')
-          && request.resource.data.profile.get('currentMonthlySpent', 0)
-            == get(rosterPath()).data.get('currentMonthlySpent', 0)
-          && request.resource.data.profile.get('spendingPeriod', '')
-            == getAfter(rosterPath()).data.get('spendingPeriod', '')
-          && request.resource.data.profile.get('monthlySpendingLimit', -1)
-            == get(rosterPath()).data.get('monthlySpendingLimit', -1)
-          && (request.resource.data.keys().hasAny(['basketSelections'])
-            ? validBasketSelection(request.resource.data.basketSelections, request.resource.data.baskets)
-            : validBasketCounts(request.resource.data.baskets))
-          && request.resource.data.items is map
-          && request.resource.data.items.size() <= 50
-          && request.resource.data.excluded is list
-          && request.resource.data.excluded.size() <= 50
-          && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['baskets', 'items', 'itemDetails', 'excluded', 'updatedAt',
-              'pickupBranch', 'totalAmount', 'currency', 'basketSelections',
-              'profile', 'editCount'])
-          && (!get(rosterPath()).data.keys().hasAny(['monthlySpendingLimit'])
-            || (request.resource.data.totalAmount is number
-              && request.resource.data.totalAmount >= 0
-              && request.resource.data.totalAmount <= get(rosterPath()).data.monthlySpendingLimit
-                - get(rosterPath()).data.get('currentMonthlySpent', 0)
-                + resource.data.get('totalAmount', 0)))
-          && (!request.resource.data.keys().hasAny(['totalAmount'])
-            || (request.resource.data.profile.get('currentMonthlySpent', 0)
-                == get(rosterPath()).data.get('currentMonthlySpent', 0)
-              && getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
-                == get(rosterPath()).data.get('currentMonthlySpent', 0)
-                  + request.resource.data.totalAmount - resource.data.get('totalAmount', 0)
-              && getAfter(rosterPath()).data.lastSpendOrderId == orderId))
-          && request.resource.data.updatedAt == request.time;
+        : signedIn() && validEmployeeOrderEdit(orderId);
 
       allow delete: if isAdmin();
     }
@@ -776,7 +776,7 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['maxTotalPerEmployee', 'updatedAt', 'updatedBy'])
         && request.resource.data.maxTotalPerEmployee is int
         && request.resource.data.maxTotalPerEmployee >= 1
-        && request.resource.data.maxTotalPerEmployee <= 10
+        && request.resource.data.maxTotalPerEmployee <= 2
         && request.resource.data.updatedAt == request.time
         && request.resource.data.updatedBy == request.auth.uid;
       allow create, update: if isAdmin() && settingId == 'support_contact'
