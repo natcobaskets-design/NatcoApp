@@ -36,11 +36,12 @@ function buildEmployeeProfile(
     ...(typeof rosterData.whatsapp === 'string' && !savedProfile?.whatsapp ? { whatsapp: rosterData.whatsapp } : {}),
     ...(typeof rosterData.monthlySpendingLimit === 'number'
       ? { monthlySpendingLimit: rosterData.monthlySpendingLimit } : {}),
-    ...(typeof rosterData.currentMonthlySpent === 'number'
-      ? { currentMonthlySpent: rosterData.currentMonthlySpent } : {}),
+    currentMonthlySpent: typeof rosterData.currentMonthlySpent === 'number'
+      ? rosterData.currentMonthlySpent : 0,
     ...(typeof rosterData.spendingPeriod === 'string' ? { spendingPeriod: rosterData.spendingPeriod } : {}),
   }
   if (typeof rosterData.monthlySpendingLimit !== 'number') delete profile.monthlySpendingLimit
+  if (typeof rosterData.spendingPeriod !== 'string') delete profile.spendingPeriod
   return profile
 }
 

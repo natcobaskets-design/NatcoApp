@@ -222,7 +222,7 @@ service cloud.firestore {
           && isApprovedEmployee()
           && validMonthlySpendMutation(
             request.auth.uid,
-            resource.data.get('currentMonthlySpent', 0),
+            get(rosterPath()).data.get('currentMonthlySpent', 0),
             rosterPath()
           ));
       allow delete: if isAdmin();
@@ -347,14 +347,13 @@ service cloud.firestore {
             && request.resource.data.pickupBranch.size() <= 80))
         && (!request.resource.data.keys().hasAny(['totalAmount'])
           || (request.resource.data.profile.get('currentMonthlySpent', 0)
-              == get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.get('currentMonthlySpent', 0)
+              == get(rosterPath()).data.get('currentMonthlySpent', 0)
             && getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
               == get(rosterPath()).data.get('currentMonthlySpent', 0) + request.resource.data.totalAmount
             && getAfter(rosterPath()).data.lastSpendOrderId == orderId
             && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
               .data.get('currentMonthlySpent', 0)
-              == get(/databases/$(database)/documents/employees/$(request.auth.uid))
-                .data.get('currentMonthlySpent', 0) + request.resource.data.totalAmount
+              == getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
             && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
               .data.lastSpendOrderId == orderId))
         && (request.resource.data.keys().hasAny(['basketSelections'])
@@ -409,17 +408,14 @@ service cloud.firestore {
                 + resource.data.get('totalAmount', 0)))
           && (!request.resource.data.keys().hasAny(['totalAmount'])
             || (request.resource.data.profile.get('currentMonthlySpent', 0)
-                == get(/databases/$(database)/documents/employees/$(request.auth.uid))
-                  .data.get('currentMonthlySpent', 0)
+                == get(rosterPath()).data.get('currentMonthlySpent', 0)
               && getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
                 == get(rosterPath()).data.get('currentMonthlySpent', 0)
                   + request.resource.data.totalAmount - resource.data.get('totalAmount', 0)
               && getAfter(rosterPath()).data.lastSpendOrderId == orderId
               && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
                 .data.get('currentMonthlySpent', 0)
-                == get(/databases/$(database)/documents/employees/$(request.auth.uid))
-                  .data.get('currentMonthlySpent', 0)
-                  + request.resource.data.totalAmount - resource.data.get('totalAmount', 0)
+                == getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
               && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
                 .data.lastSpendOrderId == orderId))
           && request.resource.data.updatedAt == request.time;
