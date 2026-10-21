@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { RecaptchaVerifier, type ConfirmationResult, type User } from 'firebase/auth'
+import { useEffect, useState, type FormEvent } from 'react'
+import type { User } from 'firebase/auth'
 import {
   onAuthStateChanged, sendEmailVerification, sendPasswordResetEmail,
-  signInWithEmailAndPassword, signInWithPhoneNumber, signOut,
+  signInWithEmailAndPassword, signOut,
 } from 'firebase/auth'
 import {
   collection, doc, getDoc, onSnapshot, query, serverTimestamp, writeBatch,
   setDoc, where,
 } from 'firebase/firestore'
 import { AppLayout } from './AppLayout'
-import { firebaseAuth, firebaseConfigured, firebaseErrorMessage, firestore } from './firebase'
+import { firebaseAuth, firebaseConfigured, firebaseErrorMessage, firebaseProjectId, firestore } from './firebase'
 import {
   blankProfile, parseCatalogProduct, parseOrder, parseProfile, productAgentPrice,
   defaultBasketDefinitions, defaultBasketSelectionSettings, defaultOrganizationOptions,
@@ -17,6 +17,7 @@ import {
   type OrganizationOptions, type Screen,
 } from './domain'
 import { toE164PhoneNumber } from './rosterImport'
+import { employeePasswordLoginEmail, isEmployeePasswordLoginEmail } from './employeeLogin'
 import './App.css'
 
 function buildEmployeeProfile(
@@ -128,10 +129,6 @@ function App() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [phone, setPhone] = useState('')
-  const [verificationCode, setVerificationCode] = useState('')
-  const [phoneCodeSent, setPhoneCodeSent] = useState(false)
-  const phoneConfirmation = useRef<ConfirmationResult | null>(null)
-  const recaptchaVerifier = useRef<RecaptchaVerifier | null>(null)
   const [authUser, setAuthUser] = useState<User | null>(null)
   const [authReady, setAuthReady] = useState(!firebaseAuth)
   const [resolvedIdentityUid, setResolvedIdentityUid] = useState('')
@@ -165,11 +162,6 @@ function App() {
       if (!user) {
         setEmail('')
         setPhone('')
-        setVerificationCode('')
-        setPhoneCodeSent(false)
-        phoneConfirmation.current = null
-        recaptchaVerifier.current?.clear()
-        recaptchaVerifier.current = null
         setIsAdmin(false)
         setIsEmployee(false)
         setSupportPhone('')
@@ -203,6 +195,7 @@ function App() {
     let current = true
     async function resolveIdentity() {
       const normalizedEmail = user.email?.trim().toLowerCase() ?? ''
+      const passwordLogin = isEmployeePasswordLoginEmail(normalizedEmail, firebaseProjectId)
       const adminSnapshot = await getDoc(doc(database, 'admin_users', user.uid))
       const hasAdminAccess = adminSnapshot.exists() && adminSnapshot.data().active === true
       if (hasAdminAccess) {
@@ -230,11 +223,24 @@ function App() {
         }
         return
       }
-      if (!user.emailVerified && !user.phoneNumber) {
+      if (!user.emailVerified && !user.phoneNumber && !passwordLogin) {
         if (current) setIdentityIssue('تحقق من بريدك الإلكتروني من الرسالة التي أرسلناها إليك، ثم سجّل الدخول مجدداً.')
         return
       }
       let employeeEmail = normalizedEmail
+      let passwordLoginPhone = ''
+      if (passwordLogin) {
+        const loginSnapshot = await getDoc(doc(database, 'employee_auth_lookup', normalizedEmail))
+        if (!loginSnapshot.exists() ||
+          loginSnapshot.data().authEmail !== normalizedEmail ||
+          typeof loginSnapshot.data().email !== 'string' ||
+          typeof loginSnapshot.data().phoneNumber !== 'string') {
+          if (current) setIdentityIssue('بيانات دخول الموظف غير مفعّلة. تواصل مع مسؤول الموارد البشرية.')
+          return
+        }
+        employeeEmail = loginSnapshot.data().email.trim().toLowerCase()
+        passwordLoginPhone = loginSnapshot.data().phoneNumber
+      }
       if (!employeeEmail && user.phoneNumber) {
         const phoneLookup = await getDoc(doc(database, 'employee_phone_lookup', user.phoneNumber))
         if (!phoneLookup.exists() || phoneLookup.data().phoneNumber !== user.phoneNumber ||
@@ -254,6 +260,12 @@ function App() {
       if (!normalizedEmail && user.phoneNumber &&
         rosterSnapshot.data().phoneE164 !== user.phoneNumber) {
         if (current) setIdentityIssue('رقم الهاتف الموثّق لا يطابق الرقم المعتمد في سجل الموظفين. تواصل مع الموارد البشرية.')
+        return
+      }
+      if (passwordLogin &&
+        (rosterSnapshot.data().phoneE164 !== passwordLoginPhone ||
+          employeePasswordLoginEmail(passwordLoginPhone, firebaseProjectId) !== normalizedEmail)) {
+        if (current) setIdentityIssue('رقم الهاتف لا يطابق الحساب المعتمد. تواصل مع مسؤول الموارد البشرية.')
         return
       }
       const profileSnapshot = await getDoc(doc(database, 'employees', user.uid))
@@ -515,65 +527,22 @@ function App() {
     }
   }
 
-  async function requestPhoneVerificationCode() {
+  async function signInEmployeeWithPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
     const phoneE164 = toE164PhoneNumber(phone)
-    if (!firebaseAuth || !phoneE164) {
-      setNotice('أدخل رقم هاتف صحيحاً بالصيغة الدولية مع رمز الدولة، مثل +9677XXXXXXXX.')
+    const loginEmail = employeePasswordLoginEmail(phoneE164, firebaseProjectId)
+    if (!firebaseAuth || !loginEmail || !password) {
+      setNotice(!firebaseAuth
+        ? 'تسجيل الدخول غير متاح حالياً. حاول مجدداً لاحقاً.'
+        : 'أدخل رقم الهاتف بالصيغة الدولية وكلمة المرور.')
       return
     }
     setBusy(true)
     try {
-      recaptchaVerifier.current?.clear()
-      const verifier = new RecaptchaVerifier(firebaseAuth, 'phone-auth-recaptcha', { size: 'invisible' })
-      recaptchaVerifier.current = verifier
-      phoneConfirmation.current = await signInWithPhoneNumber(firebaseAuth, phoneE164, verifier)
-      setPhone(phoneE164)
-      setVerificationCode('')
-      setPhoneCodeSent(true)
-      setNotice('أرسلنا رمز تحقق برسالة SMS. قد تُطبق حدود أو رسوم الرسائل حسب إعدادات Firebase وبلد الرقم.')
+      await signInWithEmailAndPassword(firebaseAuth, loginEmail, password)
+      setPassword('')
     } catch (error) {
-      recaptchaVerifier.current?.clear()
-      recaptchaVerifier.current = null
-      phoneConfirmation.current = null
-      setPhoneCodeSent(false)
-      console.error('Firebase phone verification code could not be sent.', error)
-      setNotice(firebaseErrorMessage(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  function sendPhoneVerificationCode(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    void requestPhoneVerificationCode()
-  }
-
-  function changePhoneNumber() {
-    phoneConfirmation.current = null
-    recaptchaVerifier.current?.clear()
-    recaptchaVerifier.current = null
-    setPhone('')
-    setVerificationCode('')
-    setPhoneCodeSent(false)
-    setNotice('')
-  }
-
-  async function verifyPhoneCode(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!phoneConfirmation.current || !/^\d{6}$/.test(verificationCode)) {
-      setNotice('أدخل رمز التحقق المكوّن من ٦ أرقام.')
-      return
-    }
-    setBusy(true)
-    try {
-      await phoneConfirmation.current.confirm(verificationCode)
-      phoneConfirmation.current = null
-      recaptchaVerifier.current?.clear()
-      recaptchaVerifier.current = null
-      setVerificationCode('')
-      setPhoneCodeSent(false)
-    } catch (error) {
-      console.error('Firebase phone verification failed.', error)
+      console.error('Employee phone and password sign-in failed.', error)
       setNotice(firebaseErrorMessage(error))
     } finally {
       setBusy(false)
@@ -984,11 +953,6 @@ function App() {
     setEditingOrderId(null)
     setPassword('')
     setPhone('')
-    setVerificationCode('')
-    setPhoneCodeSent(false)
-    phoneConfirmation.current = null
-    recaptchaVerifier.current?.clear()
-    recaptchaVerifier.current = null
     setScreen('email')
   }
 
@@ -1023,7 +987,10 @@ function App() {
     onOrganizationOptionsChange={setOrganizationOptions}
     loginProps={{
       hasSession: Boolean(authUser),
-      emailVerified: authUser?.emailVerified ?? Boolean(authUser?.phoneNumber),
+      emailVerified: authUser
+        ? authUser.emailVerified || Boolean(authUser.phoneNumber) ||
+          isEmployeePasswordLoginEmail(authUser.email ?? '', firebaseProjectId)
+        : false,
       identityReady,
       identityIssue,
       email,
@@ -1032,17 +999,11 @@ function App() {
       setPassword,
       phone,
       setPhone,
-      verificationCode,
-      setVerificationCode,
-      phoneCodeSent,
       busy,
       configured: firebaseConfigured,
       onClearIssue: () => setIdentityIssue(''),
       onSignIn: (event) => void signIn(event),
-      onSendPhoneCode: (event) => sendPhoneVerificationCode(event),
-      onVerifyPhoneCode: (event) => void verifyPhoneCode(event),
-      onResendPhoneCode: () => void requestPhoneVerificationCode(),
-      onChangePhone: changePhoneNumber,
+      onEmployeeSignIn: (event) => void signInEmployeeWithPassword(event),
       onReset: () => void resetPassword(),
       onRetry: () => setIdentityRetry((version) => version + 1),
       onResend: () => void resendVerification(),

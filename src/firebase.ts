@@ -9,6 +9,8 @@ const config = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 }
 
+export const firebaseProjectId = config.projectId ?? ''
+
 export const missingFirebaseSettings = Object.entries(config)
   .filter(([, value]) => !value)
   .map(([key]) => `VITE_FIREBASE_${key.replace(/[A-Z]/g, (letter) => `_${letter}`).toUpperCase()}`)
@@ -26,10 +28,10 @@ export function firebaseErrorMessage(error: unknown): string {
     return 'تعذر إكمال العملية. تحقق من الاتصال وحاول مجدداً.'
   }
   const messages: Record<string, string> = {
-    'auth/invalid-credential': 'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
-    'auth/user-not-found': 'لا يوجد حساب بهذا البريد الإلكتروني.',
-    'auth/wrong-password': 'كلمة المرور غير صحيحة.',
-    'auth/email-already-in-use': 'هذا البريد مسجل مسبقاً. سجّل الدخول بدلاً من إنشاء حساب جديد.',
+    'auth/invalid-credential': 'رقم الهاتف أو كلمة المرور غير صحيحة، أو لم يُجهّز الحساب بعد.',
+    'auth/user-not-found': 'تعذر التحقق من بيانات الدخول. راجع المشرف.',
+    'auth/wrong-password': 'رقم الهاتف أو كلمة المرور غير صحيحة.',
+    'auth/email-already-in-use': 'تعذر إنشاء حساب الدخول. راجع مسؤول النظام.',
     'auth/weak-password': 'اختر كلمة مرور من ٨ أحرف على الأقل.',
     'auth/invalid-email': 'أدخل بريداً إلكترونياً صحيحاً.',
     'auth/invalid-phone-number': 'أدخل رقم الهاتف بالصيغة الدولية مع رمز الدولة، مثل +9677XXXXXXXX.',

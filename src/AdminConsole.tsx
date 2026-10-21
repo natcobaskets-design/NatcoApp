@@ -12,7 +12,7 @@ import { AdminEmployeeProfiles } from './AdminEmployeeProfiles'
 import { AdminIntegrationSettings } from './AdminIntegrationSettings'
 import { AdminOrganizationSettings } from './AdminOrganizationSettings'
 import { AdminBasketManagement } from './AdminBasketManagement'
-import { firebaseErrorMessage, firestore } from './firebase'
+import { firebaseErrorMessage, firebaseProjectId, firestore } from './firebase'
 import {
   employeesToCsv, filterOrders, ordersToCsv, printOrderReport,
   sapCompletedOrdersToCsv, shareOrDownloadCsv, type EmployeeEntry,
@@ -22,6 +22,7 @@ import {
   productDepartments, type CatalogProduct, type Order, type OrderStatus, type OrganizationOptions,
 } from './domain'
 import { normalizePhone, parseRosterCsv, rosterImportLimit, toE164PhoneNumber, type RosterImportPreview } from './rosterImport'
+import { employeePasswordLoginEmail } from './employeeLogin'
 import { parseProductCsv, productImportLimit, type ProductImportPreview } from './productImport'
 import './AdminConsole.css'
 
@@ -453,7 +454,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       setEmail('')
       setEmployeeCode('')
       setEmployeePhone('')
-      onNotice('تم اعتماد الموظف. يمكنه تسجيل الدخول برمز SMS باستخدام رقم الهاتف المعتمد.')
+      onNotice('تم اعتماد سجل الموظف. أنشئ حساب Email/Password بعنوان الدخول الداخلي من Firebase Authentication، ثم فعّل ربطه من تعديل ملف الموظف.')
     } catch (error) {
       console.error('Unable to add employee to the approved roster.', error)
       onNotice(firebaseErrorMessage(error))
@@ -574,6 +575,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           const nextPhone = toE164PhoneNumber(row.phone)
           if (oldPhone && oldPhone !== nextPhone) {
             batch.delete(doc(database, 'employee_phone_lookup', oldPhone))
+            const oldLoginEmail = employeePasswordLoginEmail(oldPhone, firebaseProjectId)
+            if (oldLoginEmail) batch.delete(doc(database, 'employee_auth_lookup', oldLoginEmail))
           }
         })
         chunk.forEach((row) => batch.set(doc(database, 'employee_roster', row.email), {
@@ -640,7 +643,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
 
       setRosterPreview(null)
       setRosterFileName('')
-      onNotice(`تم اعتماد ${committedRows.toLocaleString('ar')} موظفاً. يمكنهم تسجيل الدخول برمز SMS بعد اعتماد رقم الهاتف.`)
+      onNotice(`تم اعتماد ${committedRows.toLocaleString('ar')} سجل موظف. أنشئ حسابات Email/Password للموظفين في Firebase Authentication، ثم فعّل ربط كل حساب من ملفه الوظيفي.`)
     } catch (error) {
       console.error(`Employee roster import stopped after ${committedRows} records.`, error)
       onNotice(committedRows
@@ -919,7 +922,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         </div>
         <div className="employee-single-heading"><strong>اعتماد موظف واحد</strong><small>استخدم هذا النموذج لإضافة موظف منفرد أو تعديل سجله.</small></div>
         <form className="employee-approval-form" onSubmit={(event) => void saveEmployee(event)}>
-          <label className="field"><span>البريد الداخلي لسجل الموظف</span><input required type="email" dir="ltr" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="employee@company.com" /><small>يُستخدم لربط سجل الموارد البشرية والطلبات فقط؛ الموظف يسجل الدخول برمز SMS.</small></label>
+          <label className="field"><span>البريد الداخلي لسجل الموظف</span><input required type="email" dir="ltr" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="employee@company.com" /><small>يُستخدم لربط سجل الموارد البشرية والطلبات فقط؛ الموظف يسجل الدخول برقم الهاتف وكلمة المرور.</small></label>
           <label className="field"><span>الكود الوظيفي</span><input required value={employeeCode} onChange={(event) => setEmployeeCode(event.target.value)} placeholder="مثال: 10482" /></label>
           <label className="field"><span>رقم الهاتف مع رمز الدولة</span><input required type="tel" dir="ltr" value={employeePhone} onChange={(event) => setEmployeePhone(event.target.value)} placeholder="+967 7XX XXX XXX" /></label>
           <button className="admin-add-button" disabled={working}><Plus size={15} /> اعتماد الموظف</button>

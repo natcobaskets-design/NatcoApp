@@ -231,7 +231,7 @@ export function AppLayout(props: AppLayoutProps) {
             <div>
               {mainTitles[screen] && <span className="eyebrow">{mainTitles[screen]?.eyebrow}</span>}
               <h2>{mainTitles[screen]?.title ?? 'ابدأ رحلتك مع ناتكو'}</h2>
-              <p>{mainTitles[screen]?.description ?? 'سجّل دخولك بالبريد الإلكتروني للوصول إلى سلتك الغذائية.'}</p>
+              <p>{mainTitles[screen]?.description ?? 'سجّل دخولك برقم الهاتف وكلمة المرور للوصول إلى سلتك الغذائية.'}</p>
             </div>
             {screen === 'baskets' && <span className="quota-chip"><ShoppingBasket size={15} /> {totalBaskets} من 2 سلة</span>}
             {screen === 'customize' && <span className="quota-chip"><Package size={15} /> {selectedProducts} أصناف مختارة</span>}

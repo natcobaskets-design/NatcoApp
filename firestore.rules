@@ -27,10 +27,38 @@ service cloud.firestore {
       return /databases/$(database)/documents/employee_phone_lookup/$(authPhone());
     }
 
+    function employeeAuthLookupPath() {
+      return /databases/$(database)/documents/employee_auth_lookup/$(authEmail());
+    }
+
+    function hasEmployeePasswordAlias() {
+      return signedIn()
+        && authEmail() is string
+        && authEmail().matches('^employee\\.[0-9]{8,15}@[^@]+\\.firebaseapp\\.com$');
+    }
+
+    function hasEmployeePasswordLogin() {
+      return hasEmployeePasswordAlias()
+        && exists(employeeAuthLookupPath())
+        && get(employeeAuthLookupPath()).data.authEmail == authEmail()
+        && get(employeeAuthLookupPath()).data.email is string
+        && get(employeeAuthLookupPath()).data.phoneNumber is string
+        && get(employeeAuthLookupPath()).data.phoneDigits is string
+        && get(employeeAuthLookupPath()).data.phoneDigits.matches('^[0-9]{8,15}$')
+        && get(employeeAuthLookupPath()).data.phoneNumber
+          == '+' + get(employeeAuthLookupPath()).data.phoneDigits
+        && authEmail().matches(
+          '^employee\\.' + get(employeeAuthLookupPath()).data.phoneDigits
+            + '@[^@]+\\.firebaseapp\\.com$'
+        );
+    }
+
     function employeeEmail() {
-      return authEmail() is string && authEmail() != ''
-        ? authEmail()
-        : get(phoneLookupPath()).data.email;
+      return hasEmployeePasswordAlias()
+        ? get(employeeAuthLookupPath()).data.email
+        : authEmail() is string && authEmail() != ''
+          ? authEmail()
+          : get(phoneLookupPath()).data.email;
     }
 
     function rosterPath() {
@@ -58,6 +86,9 @@ service cloud.firestore {
         && exists(rosterPath())
         && get(rosterPath()).data.active == true
         && (hasVerifiedEmail()
+          || (hasEmployeePasswordLogin()
+            && get(rosterPath()).data.get('phoneE164', '')
+              == get(employeeAuthLookupPath()).data.phoneNumber)
           || (hasPhoneLookup()
             && get(rosterPath()).data.get('phoneE164', '') == authPhone()));
     }
@@ -169,6 +200,9 @@ service cloud.firestore {
         || (signedIn()
           && employeeEmail() == email
           && (hasVerifiedEmail()
+            || (hasEmployeePasswordLogin()
+              && resource.data.get('phoneE164', '')
+                == get(employeeAuthLookupPath()).data.phoneNumber)
             || (hasPhoneLookup()
               && resource.data.get('phoneE164', '') == authPhone())));
       allow list: if isAdmin();
@@ -218,6 +252,13 @@ service cloud.firestore {
     match /employee_phone_lookup/{phoneNumber} {
       allow get: if isAdmin()
         || (signedIn() && authPhone() == phoneNumber);
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /employee_auth_lookup/{loginEmail} {
+      allow get: if isAdmin()
+        || (signedIn() && authEmail() == loginEmail);
       allow list: if isAdmin();
       allow create, update, delete: if isAdmin();
     }
@@ -410,7 +451,8 @@ service cloud.firestore {
             /databases/$(database)/documents/order_notifications/$(orderId)
           ).data.eventStatus == request.resource.data.status
         : signedIn()
-          && resource.data.uid == request.auth.uid
+          && (resource.data.uid == request.auth.uid
+            || resource.data.email == employeeEmail())
           && matchesEmployeeCode(resource.data.employeeCode)
           && resource.data.status == 'received'
           && request.resource.data.status == resource.data.status

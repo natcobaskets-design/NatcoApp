@@ -23,17 +23,11 @@ export type LoginProps = {
   setPassword: Dispatch<SetStateAction<string>>
   phone: string
   setPhone: Dispatch<SetStateAction<string>>
-  verificationCode: string
-  setVerificationCode: Dispatch<SetStateAction<string>>
-  phoneCodeSent: boolean
   busy: boolean
   configured: boolean
   onClearIssue: () => void
   onSignIn: (event: FormEvent<HTMLFormElement>) => void
-  onSendPhoneCode: (event: FormEvent<HTMLFormElement>) => void
-  onVerifyPhoneCode: (event: FormEvent<HTMLFormElement>) => void
-  onResendPhoneCode: () => void
-  onChangePhone: () => void
+  onEmployeeSignIn: (event: FormEvent<HTMLFormElement>) => void
   onReset: () => void
   onRetry: () => void
   onResend: () => void
@@ -59,10 +53,8 @@ export function LoginPanel(props: LoginProps) {
           <>
             <h3>أهلاً بك في بوابة ناتكو</h3>
             <p className="form-intro">{adminLoginMode
-              ? 'دخول المشرفين والحسابات المرتبطة بالبريد الإلكتروني.'
-              : props.phoneCodeSent
-                ? `أدخل رمز التحقق المرسل برسالة SMS إلى ${props.phone}.`
-                : 'أدخل رقم هاتفك المسجل لدى الموارد البشرية لاستلام رمز تحقق.'}</p>
+              ? 'دخول المشرفين والحسابات القديمة باستخدام البريد الإلكتروني.'
+              : 'أدخل رقم الهاتف المعتمد وكلمة المرور التي سلّمها لك المشرف.'}</p>
             {!props.configured && <div className="firebase-warning"><strong>الخدمة غير متاحة حالياً</strong><small>يتعذر تسجيل الدخول الآن. حاول مرة أخرى لاحقاً أو تواصل مع الدعم.</small></div>}
             {props.identityIssue && !props.hasSession && <div className="auth-inline-error" role="alert">{props.identityIssue}<button onClick={props.onClearIssue} aria-label="إغلاق"><X size={14} /></button></div>}
             {adminLoginMode ? <>
@@ -85,29 +77,33 @@ export function LoginPanel(props: LoginProps) {
                 <button className="primary-button" type="submit" disabled={!props.configured || props.busy}>{props.busy ? 'جارٍ التحقق…' : 'تسجيل الدخول'} <ArrowLeft size={18} /></button>
               </form>
               <div className="auth-secondary-actions">
-                <button className="text-button" disabled={props.busy} onClick={() => setAdminLoginMode(false)}>العودة إلى دخول الموظفين بالهاتف</button>
+                <button className="text-button" disabled={props.busy} onClick={() => setAdminLoginMode(false)}>العودة إلى دخول الموظفين بالهاتف وكلمة المرور</button>
                 <button className="text-button" disabled={!props.configured || props.busy} onClick={props.onReset}>استعادة كلمة مرور المشرف بالبريد</button>
               </div>
             </> : <>
-              <form className="auth-fields" onSubmit={props.phoneCodeSent ? props.onVerifyPhoneCode : props.onSendPhoneCode}>
+              <form className="auth-fields" onSubmit={props.onEmployeeSignIn}>
                 <label className="field"><span>رقم الهاتف مع رمز الدولة <b className="required">*</b></span>
-                  <input autoComplete="tel" type="tel" inputMode="tel" required disabled={props.phoneCodeSent} value={props.phone} onChange={(event) => props.setPhone(event.target.value)} placeholder="+9677XXXXXXXX" dir="ltr" />
-                  <small>أدخل الرقم بالصيغة الدولية، مثل ‎+9677XXXXXXXX.</small>
+                  <input autoComplete="username" type="tel" inputMode="tel" required value={props.phone} onChange={(event) => props.setPhone(event.target.value)} placeholder="+9677XXXXXXXX" dir="ltr" />
+                  <small>أدخل الرقم المسجل لدى الموارد البشرية بصيغته الدولية.</small>
                 </label>
-                {props.phoneCodeSent && <label className="field"><span>رمز التحقق <b className="required">*</b></span>
-                  <input autoComplete="one-time-code" inputMode="numeric" type="text" required pattern="[0-9]{6}" maxLength={6} value={props.verificationCode} onChange={(event) => props.setVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="••••••" dir="ltr" />
-                </label>}
-                <div id="phone-auth-recaptcha" />
-                <button className="primary-button" type="submit" disabled={!props.configured || props.busy}>{props.busy ? 'جارٍ التحقق…' : props.phoneCodeSent ? 'تأكيد الرمز والدخول' : 'إرسال رمز التحقق'} <ArrowLeft size={18} /></button>
+                <label className="field"><span>كلمة المرور <b className="required">*</b></span>
+                  <span className="password-input-wrap" dir="ltr">
+                    <input autoComplete="current-password" type={showPassword ? 'text' : 'password'} required value={props.password} onChange={(event) => props.setPassword(event.target.value)} placeholder="••••••••" />
+                    <button
+                      className="password-visibility"
+                      type="button"
+                      aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                      aria-pressed={showPassword}
+                      onClick={() => setShowPassword((visible) => !visible)}
+                    >{showPassword ? 'إخفاء' : 'إظهار'}</button>
+                  </span>
+                </label>
+                <button className="primary-button" type="submit" disabled={!props.configured || props.busy}>{props.busy ? 'جارٍ تسجيل الدخول…' : 'تسجيل الدخول'} <ArrowLeft size={18} /></button>
               </form>
               <div className="auth-secondary-actions">
-                {props.phoneCodeSent && <>
-                  <button className="text-button" disabled={!props.configured || props.busy} onClick={props.onResendPhoneCode}>إعادة إرسال الرمز</button>
-                  <button className="text-button" type="button" disabled={props.busy} onClick={props.onChangePhone}>تغيير رقم الهاتف</button>
-                </>}
                 <button className="text-button" disabled={props.busy} onClick={() => setAdminLoginMode(true)}>دخول المشرف بالبريد الإلكتروني</button>
               </div>
-              <div className="local-note"><ShieldCheck size={16} /> يُنشأ حساب المصادقة عند أول تحقق ناجح. يلزم أن يكون رقم الهاتف معتمداً ونشطاً في سجل الموظفين؛ ولا تُستخدم كلمة مرور أو رسالة بريد لاستعادة الدخول.</div>
+              <div className="local-note"><ShieldCheck size={16} /> لا يُرسل رمز SMS. ينشئ المشرف حساب الموظف مسبقاً ويسلّمه كلمة المرور. عند نسيانها، تواصل مع المشرف لإعادة ضبطها من بيئة إدارية موثوقة.</div>
             </>}
           </>}
     </div>

@@ -68,6 +68,7 @@
 .employee-password-help { display: grid; gap: 7px; padding: 12px; border: 1px solid #e7eaf1; border-radius: 8px; background: #f8f9fc; }
 .employee-password-help > strong { display: flex; align-items: center; gap: 6px; color: #24304b; font-size: 10px; }
 .employee-password-help > small { color: #70798e; font-size: 9px; line-height: 1.7; }
+.password-login-address { display:block; padding:10px 12px; border:1px solid #e1e5ed; border-radius:6px; color:#24304b; background:#f8f9fc; font:12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap:anywhere; user-select:all; }
 .employee-profile-row > div { display: grid; gap: 4px; min-width: 0; }
 .employee-profile-row > div small { color: #7c8497; font-size: 8px; overflow-wrap: anywhere; }
 .admin-empty,.admin-loading { min-height: 130px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 7px; color: #a4aaba; text-align: center; }
