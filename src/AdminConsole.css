@@ -75,6 +75,20 @@
 .employee-password-ready small { color:#70798e; font-size:9px; line-height:1.7; }
 .employee-profile-row .employee-login-status-ready { color:#23734b; }
 .employee-profile-row .employee-login-status-pending { color:#9a671b; }
+.employee-signup-requests { display:grid; gap:8px; margin:12px 0; padding:12px; border:1px solid #f0d8bc; border-radius:8px; background:#fffaf4; }
+.employee-signup-requests h4 { margin:0; color:#35415b; font-size:11px; }
+.employee-signup-requests > p { margin:0; color:#7c8497; font-size:9px; }
+.employee-signup-request-list { display:grid; gap:8px; }
+.employee-signup-request-list article { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px; border:1px solid #eceef3; border-radius:7px; background:#fff; }
+.employee-signup-request-list article > div:first-child { display:grid; gap:4px; min-width:0; }
+.employee-signup-request-list article strong { color:#35415b; font-size:10px; }
+.employee-signup-request-list article span,.employee-signup-request-list article small { color:#7c8497; font-size:8px; overflow-wrap:anywhere; }
+.employee-signup-request-list .employee-profile-editor-actions { border:0; padding:0; }
+@media(max-width:600px) {
+  .employee-signup-request-list article { align-items:flex-start; flex-direction:column; }
+  .employee-signup-request-list .employee-profile-editor-actions { width:100%; }
+  .employee-signup-request-list .employee-profile-editor-actions button { flex:1; }
+}
 .employee-profile-row > div { display: grid; gap: 4px; min-width: 0; }
 .employee-profile-row > div small { color: #7c8497; font-size: 8px; overflow-wrap: anywhere; }
 .admin-empty,.admin-loading { min-height: 130px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 7px; color: #a4aaba; text-align: center; }

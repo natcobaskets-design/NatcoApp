@@ -9,7 +9,7 @@ import {
   setDoc, where,
 } from 'firebase/firestore'
 import { AppLayout } from './AppLayout'
-import { firebaseAuth, firebaseConfigured, firebaseErrorMessage, firebaseProjectId, firestore } from './firebase'
+import { createEmployeeSignupAccount, firebaseAuth, firebaseConfigured, firebaseErrorMessage, firebaseProjectId, firestore } from './firebase'
 import {
   blankProfile, parseCatalogProduct, parseOrder, parseProfile, productAgentPrice,
   defaultBasketDefinitions, defaultBasketSelectionSettings, defaultOrganizationOptions,
@@ -230,6 +230,15 @@ function App() {
       let employeeEmail = normalizedEmail
       let passwordLoginPhone = ''
       if (passwordLogin) {
+        const signupSnapshot = await getDoc(doc(database, 'employee_signup_requests', user.uid))
+        if (signupSnapshot.exists() && signupSnapshot.data().status === 'pending') {
+          if (current) setIdentityIssue('هذا الحساب بانتظار موافقة الموارد البشرية. يرجى الانتظار حتى يراجع المسؤول طلبك.')
+          return
+        }
+        if (signupSnapshot.exists() && signupSnapshot.data().status === 'rejected') {
+          if (current) setIdentityIssue('تم رفض طلب التسجيل. تواصل مع مسؤول الموارد البشرية إذا كنت تعتقد أن هذا غير صحيح.')
+          return
+        }
         const loginSnapshot = await getDoc(doc(database, 'employee_auth_lookup', normalizedEmail))
         if (!loginSnapshot.exists() ||
           loginSnapshot.data().authEmail !== normalizedEmail ||
@@ -544,6 +553,40 @@ function App() {
     } catch (error) {
       console.error('Employee phone and password sign-in failed.', error)
       setNotice(firebaseErrorMessage(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function registerEmployee(event: FormEvent<HTMLFormElement>, name: string, employeeCode: string): Promise<boolean> {
+    event.preventDefault()
+    const phoneE164 = toE164PhoneNumber(phone)
+    const normalizedName = name.trim()
+    const normalizedCode = employeeCode.trim()
+    if (!firebaseAuth || !firestore || !firebaseConfigured) {
+      setNotice('تعذر الاتصال بقاعدة البيانات. تحقق من إعداد Firebase.')
+      return false
+    }
+    if (!phoneE164 || !normalizedName || normalizedName.length > 120 || normalizedCode.length > 80) {
+      setNotice('أدخل رقم هاتف صحيحاً واسماً كاملاً ورقماً وظيفياً ضمن الحدود المحددة.')
+      return false
+    }
+    if (password.length < 8 || password.length > 256) {
+      setNotice('يجب أن يكون طول كلمة المرور من ٨ إلى ٢٥٦ حرفاً.')
+      return false
+    }
+
+    setBusy(true)
+    try {
+      await createEmployeeSignupAccount(phoneE164, password, normalizedName, normalizedCode)
+      setPassword('')
+      setPhone(phoneE164)
+      setNotice('تم إنشاء الحساب وإرسال طلب الاعتماد. لن تتمكن من استخدام التطبيق حتى يراجع مسؤول الموارد البشرية طلبك.')
+      return true
+    } catch (error) {
+      console.error('Unable to create an employee account and approval request.', error)
+      setNotice(firebaseErrorMessage(error))
+      return false
     } finally {
       setBusy(false)
     }
@@ -1004,6 +1047,7 @@ function App() {
       onClearIssue: () => setIdentityIssue(''),
       onSignIn: (event) => void signIn(event),
       onEmployeeSignIn: (event) => void signInEmployeeWithPassword(event),
+      onEmployeeRegister: registerEmployee,
       onReset: () => void resetPassword(),
       onRetry: () => setIdentityRetry((version) => version + 1),
       onResend: () => void resendVerification(),

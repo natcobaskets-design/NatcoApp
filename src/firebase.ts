@@ -1,6 +1,7 @@
 import { deleteApp, FirebaseError, initializeApp, getApps } from 'firebase/app'
-import { createUserWithEmailAndPassword, getAuth, initializeAuth, inMemoryPersistence } from 'firebase/auth'
-import { getFirestore } from 'firebase/firestore'
+import { createUserWithEmailAndPassword, deleteUser, getAuth, initializeAuth, inMemoryPersistence } from 'firebase/auth'
+import { doc, getFirestore, serverTimestamp, setDoc } from 'firebase/firestore'
+import { employeePasswordLoginEmail } from './employeeLogin'
 
 const config = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -32,6 +33,49 @@ export async function createEmployeeLoginAccount(email: string, password: string
   try {
     const provisioningAuth = initializeAuth(provisioningApp, { persistence: inMemoryPersistence })
     await createUserWithEmailAndPassword(provisioningAuth, email, password)
+  } finally {
+    await deleteApp(provisioningApp)
+  }
+}
+
+export async function createEmployeeSignupAccount(
+  phoneNumber: string,
+  password: string,
+  name: string,
+  employeeCode: string,
+): Promise<void> {
+  if (!firebaseConfigured) throw new Error('Firebase is not configured.')
+  const phoneDigits = phoneNumber.replace(/\D/g, '')
+  const authEmail = employeePasswordLoginEmail(phoneNumber, firebaseProjectId)
+  if (!authEmail || !phoneDigits) throw new Error('Invalid employee phone number.')
+
+  const provisioningApp = initializeApp(
+    config,
+    `employee-signup-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  )
+  let createdUser: import('firebase/auth').User | null = null
+  try {
+    const provisioningAuth = initializeAuth(provisioningApp, { persistence: inMemoryPersistence })
+    createdUser = (await createUserWithEmailAndPassword(provisioningAuth, authEmail, password)).user
+    await setDoc(doc(getFirestore(provisioningApp), 'employee_signup_requests', createdUser.uid), {
+      uid: createdUser.uid,
+      authEmail,
+      phoneNumber,
+      phoneDigits,
+      name: name.trim(),
+      employeeCode: employeeCode.trim(),
+      status: 'pending',
+      createdAt: serverTimestamp(),
+    })
+  } catch (error) {
+    if (createdUser) {
+      try {
+        await deleteUser(createdUser)
+      } catch (cleanupError) {
+        console.error('Unable to remove an employee account after its signup request failed.', cleanupError)
+      }
+    }
+    throw error
   } finally {
     await deleteApp(provisioningApp)
   }

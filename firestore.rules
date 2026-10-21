@@ -263,6 +263,47 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    match /employee_signup_requests/{uid} {
+      allow get: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow list: if isAdmin();
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasAll([
+          'uid', 'authEmail', 'phoneNumber', 'phoneDigits', 'name',
+          'employeeCode', 'status', 'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'uid', 'authEmail', 'phoneNumber', 'phoneDigits', 'name',
+          'employeeCode', 'status', 'createdAt'
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.authEmail == authEmail()
+        && request.resource.data.authEmail is string
+        && request.resource.data.phoneDigits is string
+        && request.resource.data.phoneDigits.matches('^[0-9]{8,15}$')
+        && request.resource.data.phoneNumber == '+' + request.resource.data.phoneDigits
+        && request.resource.data.phoneNumber.matches('^\\+[1-9][0-9]{7,14}$')
+        && request.resource.data.authEmail.matches(
+          '^employee\\.' + request.resource.data.phoneDigits
+            + '@[^@]+\\.firebaseapp\\.com$'
+        )
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.employeeCode is string
+        && request.resource.data.employeeCode.size() <= 80
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time;
+      allow update: if isAdmin()
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'reviewedBy', 'reviewedAt'])
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt == request.time;
+      allow delete: if isAdmin();
+    }
+
     match /employees/{uid} {
       allow read: if isAdmin()
         || (signedIn() && request.auth.uid == uid

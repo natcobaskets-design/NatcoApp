@@ -20,6 +20,15 @@ type EmployeeRecord = EmployeeProfile & {
   spendingPeriod: string
 }
 
+type EmployeeSignupRequest = {
+  uid: string
+  authEmail: string
+  phoneNumber: string
+  phoneDigits: string
+  name: string
+  employeeCode: string
+}
+
 const blankRecord = (): EmployeeRecord => ({
   email: '',
   employeeCode: '',
@@ -65,6 +74,7 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
   const [selectedEmail, setSelectedEmail] = useState('')
   const [draft, setDraft] = useState<EmployeeRecord>(blankRecord)
   const [passwordLoginEmails, setPasswordLoginEmails] = useState<Set<string>>(new Set())
+  const [signupRequests, setSignupRequests] = useState<EmployeeSignupRequest[]>([])
   const [employeePassword, setEmployeePassword] = useState('')
   const [employeePasswordConfirmation, setEmployeePasswordConfirmation] = useState('')
   const [working, setWorking] = useState(false)
@@ -87,6 +97,26 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         typeof item.data().email === 'string' ? [item.data().email] : [])))
     }, (error) => {
       console.error('Unable to load employee password-login links.', error)
+      onNotice(firebaseErrorMessage(error))
+    })
+  }, [onNotice])
+
+  useEffect(() => {
+    if (!firestore) return
+    return onSnapshot(query(collection(firestore, 'employee_signup_requests'), where('status', '==', 'pending')), (snapshot) => {
+      setSignupRequests(snapshot.docs.map((item) => {
+        const data = item.data()
+        return {
+          uid: item.id,
+          authEmail: typeof data.authEmail === 'string' ? data.authEmail : '',
+          phoneNumber: typeof data.phoneNumber === 'string' ? data.phoneNumber : '',
+          phoneDigits: typeof data.phoneDigits === 'string' ? data.phoneDigits : '',
+          name: typeof data.name === 'string' ? data.name : '',
+          employeeCode: typeof data.employeeCode === 'string' ? data.employeeCode : '',
+        }
+      }))
+    }, (error) => {
+      console.error('Unable to load employee signup approval requests.', error)
       onNotice(firebaseErrorMessage(error))
     })
   }, [onNotice])
@@ -346,6 +376,78 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
     }
   }
 
+  async function approveSignupRequest(request: EmployeeSignupRequest) {
+    if (!firestore) return
+    const matchingEmployees = records.filter((record) =>
+      (record.phoneE164 || toE164PhoneNumber(record.phone)) === request.phoneNumber && record.active)
+    if (matchingEmployees.length !== 1) {
+      onNotice(matchingEmployees.length === 0
+        ? 'لا يوجد موظف نشط مطابق لهذا الرقم. أضف الموظف أو حدّث رقم هاتفه في سجل الموظفين أولاً.'
+        : 'رقم الهاتف مرتبط بأكثر من موظف. راجع سجلات الموظفين وصححها أولاً.')
+      return
+    }
+    const employee = matchingEmployees[0]
+    if (request.employeeCode && employee.employeeCode.trim() !== request.employeeCode.trim()) {
+      onNotice('الرقم الوظيفي في طلب التسجيل لا يطابق سجل الموظف. تحقق من البيانات قبل الاعتماد.')
+      return
+    }
+    const expectedAuthEmail = employeePasswordLoginEmail(request.phoneNumber, firebaseProjectId)
+    if (!expectedAuthEmail || request.authEmail !== expectedAuthEmail ||
+      request.phoneDigits !== request.phoneNumber.replace(/\D/g, '')) {
+      onNotice('بيانات الحساب لا تتطابق مع رقم الهاتف. راجع تفاصيل طلب التسجيل.')
+      return
+    }
+
+    setWorking(true)
+    try {
+      const lookupRef = doc(firestore, 'employee_auth_lookup', request.authEmail)
+      const existingLink = await getDoc(lookupRef)
+      if (existingLink.exists() && existingLink.data().email !== employee.email) {
+        onNotice('حساب الدخول مرتبط بالفعل بسجل موظف آخر. راجع سجلات الموظفين قبل المتابعة.')
+        return
+      }
+      const batch = writeBatch(firestore)
+      batch.set(lookupRef, {
+        authEmail: request.authEmail,
+        email: employee.email,
+        phoneNumber: request.phoneNumber,
+        phoneDigits: request.phoneDigits,
+        updatedAt: serverTimestamp(),
+      })
+      batch.update(doc(firestore, 'employee_signup_requests', request.uid), {
+        status: 'approved',
+        reviewedBy: user.uid,
+        reviewedAt: serverTimestamp(),
+      })
+      await batch.commit()
+      setPasswordLoginEmails((current) => new Set(current).add(employee.email))
+      onNotice(`تم اعتماد طلب ${request.name} وربط الحساب بالموظف ${employee.employeeCode}. يمكن للموظف تسجيل الدخول الآن.`)
+    } catch (error) {
+      console.error(`Unable to approve employee signup request ${request.uid}.`, error)
+      onNotice(firebaseErrorMessage(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  async function rejectSignupRequest(request: EmployeeSignupRequest) {
+    if (!firestore) return
+    setWorking(true)
+    try {
+      await updateDoc(doc(firestore, 'employee_signup_requests', request.uid), {
+        status: 'rejected',
+        reviewedBy: user.uid,
+        reviewedAt: serverTimestamp(),
+      })
+      onNotice(`تم رفض طلب التسجيل للرقم ${request.phoneNumber}.`)
+    } catch (error) {
+      console.error(`Unable to reject employee signup request ${request.uid}.`, error)
+      onNotice(firebaseErrorMessage(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
   async function copyPasswordLoginEmail() {
     const phoneNumber = draft.phoneE164 || toE164PhoneNumber(draft.phone)
     const authEmail = employeePasswordLoginEmail(phoneNumber, firebaseProjectId)
@@ -438,6 +540,25 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
   return <section className="admin-panel employee-profile-management">
     <div className="admin-panel-heading"><div><h3>سجل الموظفين وتعديل بياناتهم</h3><p>تُدار بيانات الموظفين وأرقام الهواتف وحالة دخول كلمة المرور.</p></div><div><span>{records.length} موظف</span></div></div>
     <label className="admin-search"><Search size={16} /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث بالبريد أو الاسم أو الرقم الوظيفي أو الهاتف" /></label>
+    {signupRequests.length > 0 && <section className="employee-signup-requests" aria-labelledby="employee-signup-requests-title">
+      <h4 id="employee-signup-requests-title">طلبات التسجيل بانتظار المراجعة ({signupRequests.length})</h4>
+      <p>اعتماد الطلب يربط حساب الهاتف بسجل موظف نشط مطابق. إذا لم يوجد سجل، أضف الموظف أولاً.</p>
+      <div className="employee-signup-request-list">{signupRequests.map((request) => {
+        const phoneMatches = records.filter((record) =>
+          (record.phoneE164 || toE164PhoneNumber(record.phone)) === request.phoneNumber && record.active)
+        const matchingEmployee = phoneMatches.length === 1 &&
+          (!request.employeeCode || phoneMatches[0].employeeCode.trim() === request.employeeCode.trim())
+          ? phoneMatches[0]
+          : null
+        return <article key={request.uid}>
+          <div><strong>{request.name || 'اسم غير محدد'}</strong><span dir="ltr">{request.phoneNumber}</span><small>الكود الوظيفي في الطلب: {request.employeeCode || 'غير متوفر'} · {matchingEmployee ? `الموظف المطابق: ${matchingEmployee.name} (${matchingEmployee.employeeCode})` : 'لا يوجد سجل موظف نشط وفريد يطابق الهاتف والكود'}</small></div>
+          <div className="employee-profile-editor-actions">
+            <button type="button" className="admin-add-button" disabled={working || !matchingEmployee} onClick={() => void approveSignupRequest(request)}>اعتماد وربط الحساب</button>
+            <button type="button" className="employee-profile-state-button" disabled={working} onClick={() => void rejectSignupRequest(request)}>رفض الطلب</button>
+          </div>
+        </article>
+      })}</div>
+    </section>}
     <div className="employee-profile-results">{filtered.map((record) => <article className="employee-profile-row" key={record.email}>
       <div><strong>{record.name || 'اسم غير متوفر'}</strong><span>الكود الوظيفي: {record.employeeCode || 'غير محدد'} · {record.phone || 'لا يوجد هاتف'}</span><small dir="ltr">{record.email}</small><small className={passwordLoginEmails.has(record.email) ? 'employee-login-status-ready' : 'employee-login-status-pending'}>{passwordLoginEmails.has(record.email) ? 'ربط الدخول موجود في Firestore' : 'لم يُنشأ ربط الدخول بعد'}</small></div>
       <button type="button" className="employee-profile-open" onClick={() => chooseEmployee(record)}><Edit3 size={15} /> تعديل الموظف</button>

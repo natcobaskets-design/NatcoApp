@@ -28,6 +28,7 @@ export type LoginProps = {
   onClearIssue: () => void
   onSignIn: (event: FormEvent<HTMLFormElement>) => void
   onEmployeeSignIn: (event: FormEvent<HTMLFormElement>) => void
+  onEmployeeRegister: (event: FormEvent<HTMLFormElement>, name: string, employeeCode: string) => Promise<boolean>
   onReset: () => void
   onRetry: () => void
   onResend: () => void
@@ -37,6 +38,10 @@ export type LoginProps = {
 export function LoginPanel(props: LoginProps) {
   const [showPassword, setShowPassword] = useState(false)
   const [adminLoginMode, setAdminLoginMode] = useState(false)
+  const [registeringEmployee, setRegisteringEmployee] = useState(false)
+  const [registrationName, setRegistrationName] = useState('')
+  const [registrationCode, setRegistrationCode] = useState('')
+  const [registrationPasswordConfirmation, setRegistrationPasswordConfirmation] = useState('')
   return <div className="panel login-panel">
     <div className="login-illustration">
       <div className="login-orbit"><div className="login-basket"><ShoppingBasket size={42} /></div><span className="orbit-dot dot-one" /><span className="orbit-dot dot-two" /><span className="orbit-dot dot-three" /></div>
@@ -44,66 +49,89 @@ export function LoginPanel(props: LoginProps) {
     </div>
     <div className="login-form">
       <span className="eyebrow">دخول الموظفين</span>
-      {props.hasSession && !props.identityReady ? <div className="identity-loading"><strong>جارٍ التحقق من صلاحيات الحساب…</strong></div> :
-        props.hasSession && props.identityIssue ? <div className="identity-message"><ShieldCheck size={22} /><strong>تعذر منح الوصول</strong><p>{props.identityIssue}</p>
+      {props.hasSession && !props.identityReady ? <div className="identity-loading"><strong>جارٍ التحقق من الهوية الوظيفية</strong></div> :
+        props.hasSession && props.identityIssue ? <div className="identity-message"><ShieldCheck size={22} /><strong>تعذر التحقق من الهوية</strong><p>{props.identityIssue}</p>
           {!props.emailVerified && <button className="secondary-button" onClick={props.onResend}>إعادة إرسال رسالة التحقق</button>}
           {props.emailVerified && <button className="secondary-button" onClick={props.onRetry}>إعادة التحقق من الصلاحيات</button>}
           <button className="text-button" onClick={props.onSignOut}><LogOut size={15} /> تسجيل الخروج</button>
         </div> :
           <>
-            <h3>أهلاً بك في بوابة ناتكو</h3>
+            <h3>{registeringEmployee ? 'تسجيل موظف جديد' : 'سجّل الدخول للمتابعة'}</h3>
             <p className="form-intro">{adminLoginMode
-              ? 'دخول المشرفين والحسابات القديمة باستخدام البريد الإلكتروني.'
-              : 'أدخل رقم الهاتف المعتمد وكلمة المرور التي سلّمها لك المشرف.'}</p>
-            {!props.configured && <div className="firebase-warning"><strong>الخدمة غير متاحة حالياً</strong><small>يتعذر تسجيل الدخول الآن. حاول مرة أخرى لاحقاً أو تواصل مع الدعم.</small></div>}
+              ? 'سجّل دخول المسؤول بالبريد الإلكتروني وكلمة المرور.'
+              : registeringEmployee
+                ? 'أنشئ حساباً برقم الهاتف وكلمة المرور. لا نستخدم رسائل التحقق النصية.'
+                : 'أدخل رقم هاتفك وكلمة المرور للمتابعة.'}</p>
+            {!props.configured && <div className="firebase-warning"><strong>الخدمة غير مهيأة</strong><small>تعذر الاتصال بالخدمة. يرجى التواصل مع مسؤول النظام.</small></div>}
             {props.identityIssue && !props.hasSession && <div className="auth-inline-error" role="alert">{props.identityIssue}<button onClick={props.onClearIssue} aria-label="إغلاق"><X size={14} /></button></div>}
             {adminLoginMode ? <>
               <form className="auth-fields" onSubmit={props.onSignIn}>
-                <label className="field"><span>البريد الإلكتروني <b className="required">*</b></span>
+                <label className="field"><span>البريد الإلكتروني للمشرف <b className="required">*</b></span>
                   <input autoComplete="username" type="email" required value={props.email} onChange={(event) => props.setEmail(event.target.value)} placeholder="name@company.com" dir="ltr" />
                 </label>
                 <label className="field"><span>كلمة المرور <b className="required">*</b></span>
                   <span className="password-input-wrap" dir="ltr">
-                    <input autoComplete="current-password" type={showPassword ? 'text' : 'password'} required value={props.password} onChange={(event) => props.setPassword(event.target.value)} placeholder="••••••••" />
-                    <button
-                      className="password-visibility"
-                      type="button"
-                      aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                      aria-pressed={showPassword}
-                      onClick={() => setShowPassword((visible) => !visible)}
-                    >{showPassword ? 'إخفاء' : 'إظهار'}</button>
+                    <input autoComplete="current-password" type={showPassword ? 'text' : 'password'} required value={props.password} onChange={(event) => props.setPassword(event.target.value)} placeholder="كلمة المرور" />
+                    <button className="password-visibility" type="button" aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'} aria-pressed={showPassword} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? 'إخفاء' : 'إظهار'}</button>
                   </span>
                 </label>
-                <button className="primary-button" type="submit" disabled={!props.configured || props.busy}>{props.busy ? 'جارٍ التحقق…' : 'تسجيل الدخول'} <ArrowLeft size={18} /></button>
+                <button className="primary-button" type="submit" disabled={!props.configured || props.busy}>{props.busy ? 'جارٍ تسجيل الدخول...' : 'تسجيل الدخول'} <ArrowLeft size={18} /></button>
               </form>
               <div className="auth-secondary-actions">
-                <button className="text-button" disabled={props.busy} onClick={() => setAdminLoginMode(false)}>العودة إلى دخول الموظفين بالهاتف وكلمة المرور</button>
-                <button className="text-button" disabled={!props.configured || props.busy} onClick={props.onReset}>استعادة كلمة مرور المشرف بالبريد</button>
+                <button className="text-button" disabled={props.busy} onClick={() => setAdminLoginMode(false)}>العودة إلى دخول الموظفين</button>
+                <button className="text-button" disabled={!props.configured || props.busy} onClick={props.onReset}>إعادة تعيين كلمة مرور البريد الإلكتروني</button>
               </div>
+            </> : registeringEmployee ? <>
+              <form className="auth-fields" onSubmit={(event) => {
+                void props.onEmployeeRegister(event, registrationName, registrationCode).then((created) => {
+                  if (created) {
+                    setRegistrationName('')
+                    setRegistrationCode('')
+                    setRegistrationPasswordConfirmation('')
+                    setRegisteringEmployee(false)
+                  }
+                })
+              }}>
+                <label className="field"><span>الاسم الكامل <b className="required">*</b></span>
+                  <input autoComplete="name" required maxLength={120} value={registrationName} onChange={(event) => setRegistrationName(event.target.value)} placeholder="اكتب اسمك كما في السجلات الرسمية" />
+                </label>
+                <label className="field"><span>الرقم الوظيفي</span>
+                  <input autoComplete="off" maxLength={80} value={registrationCode} onChange={(event) => setRegistrationCode(event.target.value)} placeholder="اختياري" />
+                </label>
+                <label className="field"><span>رقم الهاتف <b className="required">*</b></span>
+                  <input autoComplete="tel" type="tel" inputMode="tel" required value={props.phone} onChange={(event) => props.setPhone(event.target.value)} placeholder="+9677XXXXXXXX" dir="ltr" />
+                </label>
+                <label className="field"><span>كلمة المرور <b className="required">*</b></span>
+                  <input autoComplete="new-password" type="password" required minLength={8} maxLength={256} value={props.password} onChange={(event) => props.setPassword(event.target.value)} placeholder="٨ أحرف على الأقل" dir="ltr" />
+                </label>
+                <label className="field"><span>تأكيد كلمة المرور <b className="required">*</b></span>
+                  <input autoComplete="new-password" type="password" required minLength={8} maxLength={256} value={registrationPasswordConfirmation} onChange={(event) => setRegistrationPasswordConfirmation(event.target.value)} placeholder="أعد كتابة كلمة المرور" dir="ltr" />
+                </label>
+                <button className="primary-button" type="submit" disabled={!props.configured || props.busy || props.password !== registrationPasswordConfirmation}>{props.busy ? 'جارٍ إنشاء الحساب...' : 'إنشاء حساب وإرسال طلب الاعتماد'} <ArrowLeft size={18} /></button>
+              </form>
+              <div className="auth-secondary-actions">
+                <button className="text-button" type="button" disabled={props.busy} onClick={() => setRegisteringEmployee(false)}>العودة إلى تسجيل الدخول</button>
+              </div>
+              <div className="local-note"><ShieldCheck size={16} /> لا نرسل رسائل SMS. سيظل الحساب بانتظار موافقة مسؤول الموارد البشرية قبل إتاحة تسجيل الدخول.</div>
             </> : <>
               <form className="auth-fields" onSubmit={props.onEmployeeSignIn}>
-                <label className="field"><span>رقم الهاتف مع رمز الدولة <b className="required">*</b></span>
+                <label className="field"><span>رقم الهاتف <b className="required">*</b></span>
                   <input autoComplete="username" type="tel" inputMode="tel" required value={props.phone} onChange={(event) => props.setPhone(event.target.value)} placeholder="+9677XXXXXXXX" dir="ltr" />
-                  <small>أدخل الرقم المسجل لدى الموارد البشرية بصيغته الدولية.</small>
+                  <small>استخدم الرقم الدولي المعتمد في سجل الموظفين.</small>
                 </label>
                 <label className="field"><span>كلمة المرور <b className="required">*</b></span>
                   <span className="password-input-wrap" dir="ltr">
-                    <input autoComplete="current-password" type={showPassword ? 'text' : 'password'} required value={props.password} onChange={(event) => props.setPassword(event.target.value)} placeholder="••••••••" />
-                    <button
-                      className="password-visibility"
-                      type="button"
-                      aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                      aria-pressed={showPassword}
-                      onClick={() => setShowPassword((visible) => !visible)}
-                    >{showPassword ? 'إخفاء' : 'إظهار'}</button>
+                    <input autoComplete="current-password" type={showPassword ? 'text' : 'password'} required value={props.password} onChange={(event) => props.setPassword(event.target.value)} placeholder="كلمة المرور" />
+                    <button className="password-visibility" type="button" aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'} aria-pressed={showPassword} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? 'إخفاء' : 'إظهار'}</button>
                   </span>
                 </label>
-                <button className="primary-button" type="submit" disabled={!props.configured || props.busy}>{props.busy ? 'جارٍ تسجيل الدخول…' : 'تسجيل الدخول'} <ArrowLeft size={18} /></button>
+                <button className="primary-button" type="submit" disabled={!props.configured || props.busy}>{props.busy ? 'جارٍ تسجيل الدخول...' : 'تسجيل الدخول'} <ArrowLeft size={18} /></button>
               </form>
               <div className="auth-secondary-actions">
-                <button className="text-button" disabled={props.busy} onClick={() => setAdminLoginMode(true)}>دخول المشرف بالبريد الإلكتروني</button>
+                <button className="text-button" disabled={props.busy} onClick={() => setRegisteringEmployee(true)}>إنشاء حساب موظف جديد</button>
+                <button className="text-button" disabled={props.busy} onClick={() => setAdminLoginMode(true)}>دخول المسؤول بالبريد الإلكتروني</button>
               </div>
-              <div className="local-note"><ShieldCheck size={16} /> لا يُرسل رمز SMS. ينشئ المشرف حساب الموظف مسبقاً ويسلّمه كلمة المرور. عند نسيانها، تواصل مع المشرف لإعادة ضبطها من بيئة إدارية موثوقة.</div>
+              <div className="local-note"><ShieldCheck size={16} /> لا نرسل رسائل SMS. يعتمد الدخول على كلمة المرور، ويجب اعتماد رقم الهاتف في سجل الموظفين.</div>
             </>}
           </>}
     </div>
