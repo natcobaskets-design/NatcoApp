@@ -927,13 +927,7 @@ function App() {
         const batch = writeBatch(firestore)
         batch.update(orderRef, { ...orderData, updatedAt: serverTimestamp() })
         batch.update(rosterRef, ledgerUpdate)
-        batch.set(notificationRef, notificationData, { merge: true })
-        batch.set(syncRef, {
-          email: employeeEmail,
-          status: 'pending',
-          updatedAt: serverTimestamp(),
-        }, { merge: true })
-        failureStage = 'حفظ تعديل الطلب وإشعار المزامنة وتحديث الإنفاق ذرياً'
+        failureStage = 'حفظ تعديل الطلب وتحديث الإنفاق'
         await batch.commit()
       } else {
         const batch = writeBatch(firestore)
@@ -944,13 +938,7 @@ function App() {
           updatedAt: serverTimestamp(),
         })
         batch.update(rosterRef, ledgerUpdate)
-        batch.set(notificationRef, notificationData)
-        batch.set(syncRef, {
-          email: employeeEmail,
-          status: 'pending',
-          updatedAt: serverTimestamp(),
-        })
-        failureStage = 'حفظ الطلب وإشعار المزامنة وتحديث الإنفاق ذرياً'
+        failureStage = 'حفظ الطلب وتحديث الإنفاق'
         await batch.commit()
       }
       setProfile((current) => ({
@@ -977,6 +965,23 @@ function App() {
       setNotice(editingOrderId
         ? editSummary
         : 'تم تأكيد طلبك وإضافته إلى قائمة مزامنة Google Sheets.')
+      try {
+        const syncBatch = writeBatch(firestore)
+        syncBatch.set(notificationRef, notificationData, { merge: true })
+        syncBatch.set(syncRef, {
+          email: employeeEmail,
+          status: 'pending',
+          updatedAt: serverTimestamp(),
+        }, { merge: true })
+        await syncBatch.commit()
+      } catch (syncError) {
+        console.error('The order was saved, but its Google Sheets sync queue could not be written.', {
+          orderId: orderRef.id,
+          employeeEmail,
+          error: syncError,
+        })
+        setNotice(`تم حفظ الطلب ${order.reference} والانتقال إلى الإيصال، لكن تعذرت جدولة مزامنته مع Google Sheets. أبلغ المشرف بهذا الرقم: ${order.reference}.`)
+      }
     } catch (error) {
       console.error('Unable to submit the employee order to Firestore.', {
         stage: failureStage,
