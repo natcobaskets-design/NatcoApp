@@ -103,7 +103,7 @@ service cloud.firestore {
         && (ids.size() <= 9 || validBasketAt(ids, 9));
     }
 
-    function validMonthlySpendMutation(uid, oldSpent, peerPath) {
+    function validMonthlySpendMutation(uid, oldSpent) {
       let orderId = request.resource.data.lastSpendOrderId;
       let orderPath = /databases/$(database)/documents/orders/$(orderId);
       let orderAfter = getAfter(orderPath).data;
@@ -119,11 +119,6 @@ service cloud.firestore {
         && request.resource.data.currentMonthlySpent
           == oldSpent + orderAfter.totalAmount - priorOrderAmount
         && request.resource.data.currentMonthlySpent >= 0
-        && getAfter(peerPath).data.lastSpendOrderId == orderId
-        && getAfter(peerPath).data.currentMonthlySpent
-          == request.resource.data.currentMonthlySpent
-        && getAfter(peerPath).data.get('spendingPeriod', '')
-          == request.resource.data.get('spendingPeriod', '')
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['currentMonthlySpent', 'spendingPeriod', 'lastSpendOrderId']);
     }
@@ -176,8 +171,7 @@ service cloud.firestore {
             == resource.data.get('monthlySpendingLimit', -1)
           && validMonthlySpendMutation(
             request.auth.uid,
-            resource.data.get('currentMonthlySpent', 0),
-            /databases/$(database)/documents/employees/$(request.auth.uid)
+            resource.data.get('currentMonthlySpent', 0)
           ));
       allow delete: if isAdmin();
     }
@@ -217,14 +211,7 @@ service cloud.firestore {
           && request.resource.data.phone is string
           && request.resource.data.phone.size() <= 30
           && request.resource.data.whatsapp is string
-          && request.resource.data.whatsapp.size() <= 30)
-        || (signedIn() && request.auth.uid == uid
-          && isApprovedEmployee()
-          && validMonthlySpendMutation(
-            request.auth.uid,
-            get(rosterPath()).data.get('currentMonthlySpent', 0),
-            rosterPath()
-          ));
+          && request.resource.data.whatsapp.size() <= 30);
       allow delete: if isAdmin();
     }
 
@@ -347,12 +334,7 @@ service cloud.firestore {
               == get(rosterPath()).data.get('currentMonthlySpent', 0)
             && getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
               == get(rosterPath()).data.get('currentMonthlySpent', 0) + request.resource.data.totalAmount
-            && getAfter(rosterPath()).data.lastSpendOrderId == orderId
-            && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
-              .data.get('currentMonthlySpent', 0)
-              == getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
-            && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
-              .data.lastSpendOrderId == orderId))
+            && getAfter(rosterPath()).data.lastSpendOrderId == orderId))
         && (request.resource.data.keys().hasAny(['basketSelections'])
           ? validBasketSelection(request.resource.data.basketSelections, request.resource.data.baskets)
           : validBasketCounts(request.resource.data.baskets))
@@ -409,12 +391,7 @@ service cloud.firestore {
               && getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
                 == get(rosterPath()).data.get('currentMonthlySpent', 0)
                   + request.resource.data.totalAmount - resource.data.get('totalAmount', 0)
-              && getAfter(rosterPath()).data.lastSpendOrderId == orderId
-              && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
-                .data.get('currentMonthlySpent', 0)
-                == getAfter(rosterPath()).data.get('currentMonthlySpent', 0)
-              && getAfter(/databases/$(database)/documents/employees/$(request.auth.uid))
-                .data.lastSpendOrderId == orderId))
+              && getAfter(rosterPath()).data.lastSpendOrderId == orderId))
           && request.resource.data.updatedAt == request.time;
 
       allow delete: if false;

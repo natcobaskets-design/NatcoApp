@@ -630,7 +630,6 @@ function App() {
         : doc(collection(firestore, 'orders'))
       traceId = orderRef.id
       const notificationRef = doc(firestore, 'order_notifications', orderRef.id)
-      const employeeRef = doc(firestore, 'employees', authUser.uid)
       const rosterRef = doc(firestore, 'employee_roster', authUser.email?.trim().toLowerCase() ?? profile.email)
       const previousAmount = activeOrder?.totalAmount ?? 0
       const nextMonthlySpent = (profile.currentMonthlySpent ?? 0) + totalAmount - previousAmount
@@ -664,7 +663,6 @@ function App() {
       if (editingOrderId) {
         const batch = writeBatch(firestore)
         batch.update(orderRef, { ...orderData, updatedAt: serverTimestamp() })
-        batch.update(employeeRef, ledgerUpdate)
         batch.update(rosterRef, ledgerUpdate)
         failureStage = 'حفظ تعديل الطلب وتحديث سجل الإنفاق ذرياً'
         await batch.commit()
@@ -676,7 +674,6 @@ function App() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         })
-        batch.update(employeeRef, ledgerUpdate)
         batch.update(rosterRef, ledgerUpdate)
         failureStage = 'حفظ الطلب وتحديث سجل الإنفاق ذرياً'
         await batch.commit()
