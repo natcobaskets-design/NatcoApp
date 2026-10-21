@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { sendPasswordResetEmail, type User } from 'firebase/auth'
+import type { User } from 'firebase/auth'
 import { collection, deleteField, doc, getDocs, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore'
-import { Ban, Check, Edit3, KeyRound, Search, Save, Trash2, Users, X } from 'lucide-react'
+import { Ban, Check, Edit3, Phone, Search, Save, Trash2, Users, X } from 'lucide-react'
 import { formatYER, type EmployeeProfile, type OrganizationOptions } from './domain'
-import { firebaseAuth, firebaseErrorMessage, firestore } from './firebase'
-import { normalizePhone } from './rosterImport'
+import { firebaseErrorMessage, firestore } from './firebase'
+import { normalizePhone, toE164PhoneNumber } from './rosterImport'
 
 type Props = {
   user: User
@@ -13,6 +13,7 @@ type Props = {
 }
 type EmployeeRecord = EmployeeProfile & {
   active: boolean
+  phoneE164: string
   monthlySpendingLimit?: number
   currentMonthlySpent: number
   spendingPeriod: string
@@ -28,6 +29,7 @@ const blankRecord = (): EmployeeRecord => ({
   address: '',
   coordinates: '',
   phone: '',
+  phoneE164: '',
   whatsapp: '',
   currentMonthlySpent: 0,
   spendingPeriod: '',
@@ -46,6 +48,7 @@ function parseRosterProfile(id: string, data: Record<string, unknown>): Employee
     address: typeof data.address === 'string' ? data.address : '',
     coordinates: typeof data.coordinates === 'string' ? data.coordinates : '',
     phone: typeof data.phone === 'string' ? data.phone : '',
+    phoneE164: typeof data.phoneE164 === 'string' ? data.phoneE164 : '',
     whatsapp: typeof data.whatsapp === 'string' ? data.whatsapp : '',
     ...(typeof data.monthlySpendingLimit === 'number' ? { monthlySpendingLimit: data.monthlySpendingLimit } : {}),
     currentMonthlySpent: typeof data.currentMonthlySpent === 'number' ? data.currentMonthlySpent : 0,
@@ -113,13 +116,14 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
     event.preventDefault()
     if (!firestore || !selectedEmail) return
     const normalizedPhone = normalizePhone(draft.phone)
+    const phoneE164 = toE164PhoneNumber(draft.phone)
     if (!draft.employeeCode.trim() || draft.employeeCode.trim().length > 80 ||
       !draft.name.trim() || draft.name.trim().length > 120 ||
       !draft.company || !draft.branch || !draft.province ||
       (draft.monthlySpendingLimit !== undefined &&
         (!Number.isFinite(draft.monthlySpendingLimit) || draft.monthlySpendingLimit < 0 || draft.monthlySpendingLimit > 1_000_000_000)) ||
       !Number.isFinite(draft.currentMonthlySpent) || draft.currentMonthlySpent < 0 || draft.currentMonthlySpent > 1_000_000_000 ||
-      !/^\+?[\d\s()-]{8,30}$/.test(draft.phone) ||
+      !/^\+?[\d\s()-]{8,30}$/.test(draft.phone) || !phoneE164 ||
       normalizedPhone.length < 8 || normalizedPhone.length > 18 ||
       !/^\+?[\d\s()-]{8,30}$/.test(draft.whatsapp) ||
       normalizePhone(draft.whatsapp).length < 8 || normalizePhone(draft.whatsapp).length > 18 ||
@@ -149,6 +153,8 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
       }
       const profilesQuery = await getDocs(query(collection(firestore, 'employees'), where('email', '==', selectedEmail)))
       const period = currentPeriod
+      const previousRecord = records.find((record) => record.email === selectedEmail)
+      const previousPhoneE164 = previousRecord?.phoneE164 || toE164PhoneNumber(previousRecord?.phone ?? '')
       const protectedFields = {
         employeeCode: draft.employeeCode.trim(),
         company: draft.company,
@@ -165,12 +171,21 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         address: draft.address.trim(),
         coordinates: draft.coordinates.trim(),
         phone: draft.phone.trim(),
+        phoneE164,
         phoneLookup: normalizedPhone,
         whatsapp: draft.whatsapp.trim(),
         active: draft.active,
         approvedBy: user.uid,
         updatedAt: serverTimestamp(),
       }, { merge: true })
+      batch.set(doc(firestore, 'employee_phone_lookup', phoneE164), {
+        email: selectedEmail,
+        phoneNumber: phoneE164,
+        updatedAt: serverTimestamp(),
+      })
+      if (previousPhoneE164 && previousPhoneE164 !== phoneE164) {
+        batch.delete(doc(firestore, 'employee_phone_lookup', previousPhoneE164))
+      }
       profilesQuery.docs.forEach((profileSnapshot) => batch.set(profileSnapshot.ref, {
         email: selectedEmail,
         ...protectedFields,
@@ -188,7 +203,7 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
       await batch.commit()
       setDraft((current) => ({ ...current, spendingPeriod: period }))
       setEditorOpen(false)
-      onNotice(`تم حفظ بيانات ${draft.name.trim()}، ورقم الهاتف ورابط إعادة تعيين كلمة المرور متاحان في هذا الملف.`)
+      onNotice(`تم حفظ بيانات ${draft.name.trim()} ورقم الهاتف المعتمد لتسجيل الدخول.`)
     } catch (error) {
       console.error(`Unable to save employee profile ${selectedEmail}.`, error)
       onNotice(firebaseErrorMessage(error))
@@ -197,17 +212,38 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
     }
   }
 
-  async function sendEmployeePasswordReset() {
-    if (!firebaseAuth || !selectedEmail) {
-      onNotice('إرسال رابط إعادة التعيين غير متاح حالياً.')
+  async function enablePhoneLoginForExistingEmployees() {
+    const database = firestore
+    if (!database) return
+    const candidates = records.flatMap((record) => {
+      const phoneNumber = record.phoneE164 || toE164PhoneNumber(record.phone)
+      return phoneNumber ? [{ email: record.email, phoneNumber }] : []
+    })
+    const counts = new Map<string, number>()
+    candidates.forEach(({ phoneNumber }) => counts.set(phoneNumber, (counts.get(phoneNumber) ?? 0) + 1))
+    const unique = candidates.filter(({ phoneNumber }) => counts.get(phoneNumber) === 1)
+    const skipped = records.length - unique.length
+    if (!unique.length) {
+      onNotice('لم نجد أرقاماً دولية فريدة. حدّث أرقام الموظفين إلى صيغة +رمز الدولة ثم أعد المحاولة.')
       return
     }
     setWorking(true)
     try {
-      await sendPasswordResetEmail(firebaseAuth, selectedEmail)
-      onNotice(`تم إرسال رابط إعادة تعيين كلمة المرور إلى ${selectedEmail}.`)
+      for (let offset = 0; offset < unique.length; offset += 200) {
+        const batch = writeBatch(database)
+        unique.slice(offset, offset + 200).forEach(({ email: employeeEmail, phoneNumber }) => {
+          batch.set(doc(database, 'employee_roster', employeeEmail), { phoneE164: phoneNumber }, { merge: true })
+          batch.set(doc(database, 'employee_phone_lookup', phoneNumber), {
+            email: employeeEmail,
+            phoneNumber,
+            updatedAt: serverTimestamp(),
+          })
+        })
+        await batch.commit()
+      }
+      onNotice(`تم تجهيز تسجيل الدخول بالهاتف لـ ${unique.length} موظف. تم تجاوز ${skipped} سجل بسبب رقم غير صالح أو مكرر.`)
     } catch (error) {
-      console.error(`Unable to send a password reset email to ${selectedEmail}.`, error)
+      console.error('Unable to prepare employee phone sign-in records.', error)
       onNotice(firebaseErrorMessage(error))
     } finally {
       setWorking(false)
@@ -246,6 +282,8 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
       const profiles = await getDocs(query(collection(firestore, 'employees'), where('email', '==', selectedEmail)))
       const batch = writeBatch(firestore)
       batch.delete(doc(firestore, 'employee_roster', selectedEmail))
+      const phoneE164 = draft.phoneE164 || toE164PhoneNumber(draft.phone)
+      if (phoneE164) batch.delete(doc(firestore, 'employee_phone_lookup', phoneE164))
       profiles.docs.forEach((profile) => batch.delete(profile.ref))
       batch.set(doc(firestore, 'employee_sync_queue', selectedEmail), {
         email: selectedEmail,
@@ -281,7 +319,7 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
   }
 
   return <section className="admin-panel employee-profile-management">
-    <div className="admin-panel-heading"><div><h3>سجل الموظفين وتعديل بياناتهم</h3><p>تُدار بيانات الموظف ورقم التواصل وإعادة تعيين كلمة المرور من هذه القائمة الموحدة.</p></div><span>{records.length} موظف</span></div>
+    <div className="admin-panel-heading"><div><h3>سجل الموظفين وتعديل بياناتهم</h3><p>تُدار بيانات الموظفين وأرقامهم المعتمدة لتسجيل الدخول برسالة تحقق.</p></div><div><span>{records.length} موظف</span><button type="button" className="admin-export-button" disabled={working || !records.length} onClick={() => void enablePhoneLoginForExistingEmployees()}><Phone size={14} /> تهيئة الدخول بالهاتف</button></div></div>
     <label className="admin-search"><Search size={16} /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث بالبريد أو الاسم أو الرقم الوظيفي أو الهاتف" /></label>
     <div className="employee-profile-results">{filtered.map((record) => <article className="employee-profile-row" key={record.email}>
       <div><strong>{record.name || 'اسم غير متوفر'}</strong><span>الكود الوظيفي: {record.employeeCode || 'غير محدد'} · {record.phone || 'لا يوجد هاتف'}</span><small dir="ltr">{record.email}</small></div>
@@ -299,9 +337,9 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         <label className="field"><span>الإنفاق الشهري الحالي (ر.ي)</span><input required type="number" min="0" value={draft.currentMonthlySpent} onChange={(event) => setDraft((current) => ({ ...current, currentMonthlySpent: Number(event.target.value) }))} /></label>
         <label className="field"><span>العنوان</span><input value={draft.address} onChange={(event) => setDraft((current) => ({ ...current, address: event.target.value }))} /></label>
         <label className="field"><span>الإحداثيات</span><input value={draft.coordinates} onChange={(event) => setDraft((current) => ({ ...current, coordinates: event.target.value }))} /></label>
-        <label className="field"><span>هاتف الموظف المسجل</span><input required type="tel" dir="ltr" value={draft.phone} onChange={(event) => setDraft((current) => ({ ...current, phone: event.target.value }))} /></label>
+        <label className="field"><span>هاتف الموظف المسجل</span><input required type="tel" dir="ltr" value={draft.phone} onChange={(event) => setDraft((current) => ({ ...current, phone: event.target.value, phoneE164: toE164PhoneNumber(event.target.value) }))} /><small>استخدم الصيغة الدولية مع + ورمز الدولة، مثل +9677XXXXXXXX.</small></label>
         <label className="field"><span>واتساب</span><input value={draft.whatsapp} onChange={(event) => setDraft((current) => ({ ...current, whatsapp: event.target.value }))} /></label>
-        <div className="employee-password-help"><strong><KeyRound size={15} /> تسجيل الدخول وكلمة المرور</strong><small>البريد هو معرّف الدخول الحالي. لا يمكن عرض كلمة المرور المحفوظة؛ أرسل للموظف رابطاً آمناً لاختيار كلمة مرور جديدة. رقم الهاتف محفوظ للتواصل ولا يعمل كاسم دخول في الوضع الحالي.</small><button type="button" className="admin-export-button" disabled={working || !draft.active} onClick={() => void sendEmployeePasswordReset()}>إرسال رابط إعادة تعيين كلمة المرور</button></div>
+        <div className="employee-password-help"><strong><Phone size={15} /> تسجيل الدخول بالهاتف</strong><small>يتحقق الموظف من الرقم برسالة SMS. بعد حفظ الرقم، شغّل «تهيئة الدخول بالهاتف» مرة واحدة لتجهيز السجلات القديمة. لا توجد كلمة مرور أو رسالة إعادة تعيين بالبريد.</small></div>
         <small>الإنفاق: {formatYER(draft.currentMonthlySpent)} · فترة الشهر: {draft.spendingPeriod || 'غير محددة'}</small>
         <div className="employee-profile-editor-actions">
           <button className="admin-add-button" disabled={working}><Save size={14} /> حفظ</button>

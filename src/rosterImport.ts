@@ -19,7 +19,18 @@ export type RosterImportPreview = { rows: RosterImportRow[]; issues: string[]; t
 export const rosterImportLimit = 10_000
 
 export function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, '')
+  const westernDigits = phone
+    .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632))
+    .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
+  return westernDigits.replace(/\D/g, '')
+}
+
+export function toE164PhoneNumber(phone: string): string {
+  const westernDigits = phone
+    .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 1632))
+    .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 1776))
+  const normalized = westernDigits.trim().replace(/[()\s-]/g, '')
+  return /^\+[1-9]\d{7,14}$/.test(normalized) ? normalized : ''
 }
 
 function parseCsvRows(content: string): string[][] {
@@ -115,8 +126,8 @@ export function parseRosterCsv(content: string): RosterImportPreview {
       return
     }
     if (phone && (!/^\+?[\d\s()-]{8,30}$/.test(phone) ||
-      phoneLookup.length < 8 || phoneLookup.length > 18)) {
-      issues.push(`الصف ${line}: رقم الهاتف يجب أن يتضمن من 8 إلى 18 رقماً مع رمز الدولة.`)
+      phoneLookup.length < 8 || phoneLookup.length > 18 || !toE164PhoneNumber(phone))) {
+      issues.push(`الصف ${line}: رقم الهاتف يجب أن يكون بصيغة دولية تبدأ بـ + وتتضمن رمز الدولة.`)
       return
     }
     if ((limitText && (!Number.isFinite(monthlySpendingLimit) || Number(monthlySpendingLimit) < 0)) ||

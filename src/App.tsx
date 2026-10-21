@@ -1,8 +1,8 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import type { User } from 'firebase/auth'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { RecaptchaVerifier, type ConfirmationResult, type User } from 'firebase/auth'
 import {
-  createUserWithEmailAndPassword, onAuthStateChanged, sendEmailVerification,
-  sendPasswordResetEmail, signInWithEmailAndPassword, signOut,
+  onAuthStateChanged, sendEmailVerification, sendPasswordResetEmail,
+  signInWithEmailAndPassword, signInWithPhoneNumber, signOut,
 } from 'firebase/auth'
 import {
   collection, doc, getDoc, onSnapshot, query, serverTimestamp, writeBatch,
@@ -16,6 +16,7 @@ import {
   parseBasketDefinition, parseOrganizationOptions, type BasketCounts, type CatalogProduct, type EmployeeProfile, type Order,
   type OrganizationOptions, type Screen,
 } from './domain'
+import { toE164PhoneNumber } from './rosterImport'
 import './App.css'
 
 function buildEmployeeProfile(
@@ -126,6 +127,11 @@ function App() {
   const [organizationOptions, setOrganizationOptions] = useState<OrganizationOptions>(defaultOrganizationOptions)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [phone, setPhone] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
+  const [phoneCodeSent, setPhoneCodeSent] = useState(false)
+  const phoneConfirmation = useRef<ConfirmationResult | null>(null)
+  const recaptchaVerifier = useRef<RecaptchaVerifier | null>(null)
   const [authUser, setAuthUser] = useState<User | null>(null)
   const [authReady, setAuthReady] = useState(!firebaseAuth)
   const [resolvedIdentityUid, setResolvedIdentityUid] = useState('')
@@ -158,6 +164,12 @@ function App() {
       setResolvedIdentityUid('')
       if (!user) {
         setEmail('')
+        setPhone('')
+        setVerificationCode('')
+        setPhoneCodeSent(false)
+        phoneConfirmation.current = null
+        recaptchaVerifier.current?.clear()
+        recaptchaVerifier.current = null
         setIsAdmin(false)
         setIsEmployee(false)
         setSupportPhone('')
@@ -190,8 +202,7 @@ function App() {
     const user = authUser
     let current = true
     async function resolveIdentity() {
-      const normalizedEmail = user.email?.trim().toLowerCase()
-      if (!normalizedEmail) throw new Error('The signed-in Firebase user has no email address.')
+      const normalizedEmail = user.email?.trim().toLowerCase() ?? ''
       const adminSnapshot = await getDoc(doc(database, 'admin_users', user.uid))
       const hasAdminAccess = adminSnapshot.exists() && adminSnapshot.data().active === true
       if (hasAdminAccess) {
@@ -201,7 +212,7 @@ function App() {
         setIsEmployee(false)
         setScreen('admin')
 
-        if (!user.emailVerified) return
+        if (!normalizedEmail || !user.emailVerified) return
         const rosterSnapshot = await getDoc(doc(database, 'employee_roster', normalizedEmail))
         const hasEmployeeAccess = rosterSnapshot.exists() && rosterSnapshot.data().active === true
         if (!current) return
@@ -219,25 +230,41 @@ function App() {
         }
         return
       }
-      if (!user.emailVerified) {
+      if (!user.emailVerified && !user.phoneNumber) {
         if (current) setIdentityIssue('تحقق من بريدك الإلكتروني من الرسالة التي أرسلناها إليك، ثم سجّل الدخول مجدداً.')
         return
       }
-      const rosterSnapshot = await getDoc(doc(database, 'employee_roster', normalizedEmail))
+      let employeeEmail = normalizedEmail
+      if (!employeeEmail && user.phoneNumber) {
+        const phoneLookup = await getDoc(doc(database, 'employee_phone_lookup', user.phoneNumber))
+        if (!phoneLookup.exists() || phoneLookup.data().phoneNumber !== user.phoneNumber ||
+          typeof phoneLookup.data().email !== 'string') {
+          if (current) setIdentityIssue('رقم الهاتف غير معتمد للدخول. راجع مسؤول الموارد البشرية.')
+          return
+        }
+        employeeEmail = phoneLookup.data().email.trim().toLowerCase()
+      }
+      if (!employeeEmail) throw new Error('The signed-in Firebase user has no approved phone or email identity.')
+      const rosterSnapshot = await getDoc(doc(database, 'employee_roster', employeeEmail))
       const hasEmployeeAccess = rosterSnapshot.exists() && rosterSnapshot.data().active === true
       if (!hasEmployeeAccess) {
         if (current) setIdentityIssue('لم يُعتمد هذا الحساب كموظف بعد. راجع مسؤول الموارد البشرية.')
         return
       }
+      if (!normalizedEmail && user.phoneNumber &&
+        rosterSnapshot.data().phoneE164 !== user.phoneNumber) {
+        if (current) setIdentityIssue('رقم الهاتف الموثّق لا يطابق الرقم المعتمد في سجل الموظفين. تواصل مع الموارد البشرية.')
+        return
+      }
       const profileSnapshot = await getDoc(doc(database, 'employees', user.uid))
       if (!current) return
       const savedProfile = profileSnapshot.exists() ? parseProfile(profileSnapshot.data()) : null
-      setEmail(normalizedEmail)
+      setEmail(employeeEmail)
       setIsAdmin(false)
       setIsEmployee(true)
       const rosterData = rosterSnapshot.data()
       setAssignedCompany(typeof rosterData.company === 'string' ? rosterData.company : '')
-      const currentProfile = buildEmployeeProfile(savedProfile, rosterData, normalizedEmail)
+      const currentProfile = buildEmployeeProfile(savedProfile, rosterData, employeeEmail)
       setProfile(currentProfile)
       setPickupBranch(currentProfile.branch)
       setProfileReturn('baskets')
@@ -347,9 +374,9 @@ function App() {
   }, [isEmployee])
 
   useEffect(() => {
-    const normalizedEmail = authUser?.email?.trim().toLowerCase()
-    if (!isEmployee || !authUser || !normalizedEmail || !firestore) return
-    const rosterRef = doc(firestore, 'employee_roster', normalizedEmail)
+    const employeeEmail = (profile.email || email).trim().toLowerCase()
+    if (!isEmployee || !authUser || !employeeEmail || !firestore) return
+    const rosterRef = doc(firestore, 'employee_roster', employeeEmail)
     const profileRef = doc(firestore, 'employees', authUser.uid)
     let rosterData: Record<string, unknown> | null = null
     let savedProfile: EmployeeProfile | null = null
@@ -361,7 +388,7 @@ function App() {
         setScreen('email')
         return
       }
-      const latest = buildEmployeeProfile(savedProfile, rosterData, normalizedEmail)
+      const latest = buildEmployeeProfile(savedProfile, rosterData, employeeEmail)
       setAssignedCompany(typeof rosterData.company === 'string' ? rosterData.company : '')
       setProfile(latest)
       setPickupBranch((current) => current || latest.branch)
@@ -384,7 +411,7 @@ function App() {
       unsubscribeRoster()
       unsubscribeProfile()
     }
-  }, [authUser, isEmployee])
+  }, [authUser, isEmployee, email, profile.email])
 
   useEffect(() => {
     if (!isEmployee || !firestore) return
@@ -403,7 +430,8 @@ function App() {
   }, [isEmployee])
 
   useEffect(() => {
-    if (!isEmployee || !authUser || !firestore) return
+    const employeeEmail = (profile.email || email).trim().toLowerCase()
+    if (!isEmployee || !authUser || !firestore || !employeeEmail) return
     const unsubscribeProducts = onSnapshot(
       query(collection(firestore, 'products'), where('active', '==', true)),
       (snapshot) => {
@@ -420,7 +448,7 @@ function App() {
       },
     )
     const unsubscribeOrders = onSnapshot(
-      query(collection(firestore, 'orders'), where('uid', '==', authUser.uid)),
+      query(collection(firestore, 'orders'), where('email', '==', employeeEmail)),
       (snapshot) => {
         const nextOrders = snapshot.docs.flatMap((item) => {
           const order = parseOrder(item.id, item.data())
@@ -440,7 +468,7 @@ function App() {
       unsubscribeProducts()
       unsubscribeOrders()
     }
-  }, [isEmployee, authUser])
+  }, [isEmployee, authUser, email, profile.email])
 
   useEffect(() => {
     if (!notice) return
@@ -472,7 +500,7 @@ function App() {
     if (!firebaseAuth || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || !password) {
       setNotice(!firebaseAuth
         ? 'تسجيل الدخول غير متاح حالياً. حاول مجدداً لاحقاً.'
-        : 'أدخل بريدك الإلكتروني وكلمة المرور. تسجيل الدخول بالهاتف أو الرقم الوظيفي غير متاح في النسخة المجانية.')
+        : 'أدخل البريد الإلكتروني وكلمة المرور لحساب المشرف أو الحساب القديم.')
       return
     }
     setBusy(true)
@@ -487,23 +515,65 @@ function App() {
     }
   }
 
-  async function registerEmployee() {
-    const normalizedEmail = email.trim().toLowerCase()
-    if (!firebaseAuth ||
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) ||
-      password.length < 8 || password.length > 128) {
-      setNotice('أدخل بريدك الإلكتروني المعتمد وكلمة مرور من ٨ أحرف على الأقل.')
+  async function requestPhoneVerificationCode() {
+    const phoneE164 = toE164PhoneNumber(phone)
+    if (!firebaseAuth || !phoneE164) {
+      setNotice('أدخل رقم هاتف صحيحاً بالصيغة الدولية مع رمز الدولة، مثل +9677XXXXXXXX.')
       return
     }
     setBusy(true)
     try {
-      const credential = await createUserWithEmailAndPassword(firebaseAuth, normalizedEmail, password)
-      await sendEmailVerification(credential.user)
-      await signOut(firebaseAuth)
-      setPassword('')
-      setNotice('أرسلنا رسالة تحقق إلى بريدك الإلكتروني. بعد التحقق، سجّل الدخول بالبريد المعتمد. يجب أن يضاف الموظف إلى سجل الاعتماد قبل استخدام النظام.')
+      recaptchaVerifier.current?.clear()
+      const verifier = new RecaptchaVerifier(firebaseAuth, 'phone-auth-recaptcha', { size: 'invisible' })
+      recaptchaVerifier.current = verifier
+      phoneConfirmation.current = await signInWithPhoneNumber(firebaseAuth, phoneE164, verifier)
+      setPhone(phoneE164)
+      setVerificationCode('')
+      setPhoneCodeSent(true)
+      setNotice('أرسلنا رمز تحقق برسالة SMS. قد تُطبق حدود أو رسوم الرسائل حسب إعدادات Firebase وبلد الرقم.')
     } catch (error) {
-      console.error('Firebase employee account registration failed.', error)
+      recaptchaVerifier.current?.clear()
+      recaptchaVerifier.current = null
+      phoneConfirmation.current = null
+      setPhoneCodeSent(false)
+      console.error('Firebase phone verification code could not be sent.', error)
+      setNotice(firebaseErrorMessage(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function sendPhoneVerificationCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    void requestPhoneVerificationCode()
+  }
+
+  function changePhoneNumber() {
+    phoneConfirmation.current = null
+    recaptchaVerifier.current?.clear()
+    recaptchaVerifier.current = null
+    setPhone('')
+    setVerificationCode('')
+    setPhoneCodeSent(false)
+    setNotice('')
+  }
+
+  async function verifyPhoneCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!phoneConfirmation.current || !/^\d{6}$/.test(verificationCode)) {
+      setNotice('أدخل رمز التحقق المكوّن من ٦ أرقام.')
+      return
+    }
+    setBusy(true)
+    try {
+      await phoneConfirmation.current.confirm(verificationCode)
+      phoneConfirmation.current = null
+      recaptchaVerifier.current?.clear()
+      recaptchaVerifier.current = null
+      setVerificationCode('')
+      setPhoneCodeSent(false)
+    } catch (error) {
+      console.error('Firebase phone verification failed.', error)
       setNotice(firebaseErrorMessage(error))
     } finally {
       setBusy(false)
@@ -549,7 +619,7 @@ function App() {
     try {
       const savedProfile: EmployeeProfile = {
         ...profile,
-        email: authUser.email?.toLowerCase() ?? '',
+        email: email.toLowerCase(),
         name: profile.name.trim(),
         address: profile.address.trim(),
         phone: profile.phone.trim(),
@@ -621,7 +691,7 @@ function App() {
   }
 
   async function requestProfileChange(message: string) {
-    if (!firestore || !authUser?.email) {
+    if (!firestore || !authUser || !email) {
       setNotice('يجب تسجيل الدخول لإرسال طلب تعديل البيانات.')
       return
     }
@@ -633,7 +703,7 @@ function App() {
     try {
       await setDoc(doc(collection(firestore, 'profile_change_requests')), {
         uid: authUser.uid,
-        email: authUser.email.toLowerCase(),
+        email,
         employeeCode: profile.employeeCode,
         message: requestText,
         status: 'pending',
@@ -735,7 +805,12 @@ function App() {
         : doc(collection(firestore, 'orders'))
       traceId = orderRef.id
       const notificationRef = doc(firestore, 'order_notifications', orderRef.id)
-      const rosterRef = doc(firestore, 'employee_roster', authUser.email?.trim().toLowerCase() ?? profile.email)
+      const employeeEmail = profile.email.trim().toLowerCase()
+      if (!employeeEmail) {
+        setNotice('تعذر تحديد سجل الموظف. سجّل الخروج ثم أعد التحقق من رقم الهاتف.')
+        return
+      }
+      const rosterRef = doc(firestore, 'employee_roster', employeeEmail)
       const previousAmount = activeOrder?.totalAmount ?? 0
       const nextMonthlySpent = (profile.currentMonthlySpent ?? 0) + totalAmount - previousAmount
       if (nextMonthlySpent < 0) {
@@ -757,7 +832,7 @@ function App() {
           ? activeOrder?.reference ?? `NATCO-${orderRef.id.slice(-6).toUpperCase()}`
           : `NATCO-${orderRef.id.slice(-6).toUpperCase()}`,
         uid: authUser.uid,
-        email: authUser.email?.toLowerCase() ?? profile.email.toLowerCase(),
+        email: employeeEmail,
         employeeCode: profile.employeeCode,
         profile: orderProfile,
         baskets: { ...counts },
@@ -908,6 +983,12 @@ function App() {
     setActiveOrder(null)
     setEditingOrderId(null)
     setPassword('')
+    setPhone('')
+    setVerificationCode('')
+    setPhoneCodeSent(false)
+    phoneConfirmation.current = null
+    recaptchaVerifier.current?.clear()
+    recaptchaVerifier.current = null
     setScreen('email')
   }
 
@@ -942,18 +1023,26 @@ function App() {
     onOrganizationOptionsChange={setOrganizationOptions}
     loginProps={{
       hasSession: Boolean(authUser),
-      emailVerified: authUser?.emailVerified ?? false,
+      emailVerified: authUser?.emailVerified ?? Boolean(authUser?.phoneNumber),
       identityReady,
       identityIssue,
       email,
       setEmail,
       password,
       setPassword,
+      phone,
+      setPhone,
+      verificationCode,
+      setVerificationCode,
+      phoneCodeSent,
       busy,
       configured: firebaseConfigured,
       onClearIssue: () => setIdentityIssue(''),
       onSignIn: (event) => void signIn(event),
-      onRegister: () => void registerEmployee(),
+      onSendPhoneCode: (event) => sendPhoneVerificationCode(event),
+      onVerifyPhoneCode: (event) => void verifyPhoneCode(event),
+      onResendPhoneCode: () => void requestPhoneVerificationCode(),
+      onChangePhone: changePhoneNumber,
       onReset: () => void resetPassword(),
       onRetry: () => setIdentityRetry((version) => version + 1),
       onResend: () => void resendVerification(),

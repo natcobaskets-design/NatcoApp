@@ -21,7 +21,7 @@ import {
   orderStatusLabels, parseCatalogProduct, parseOrder, productCatalogSeed,
   productDepartments, type CatalogProduct, type Order, type OrderStatus, type OrganizationOptions,
 } from './domain'
-import { normalizePhone, parseRosterCsv, rosterImportLimit, type RosterImportPreview } from './rosterImport'
+import { normalizePhone, parseRosterCsv, rosterImportLimit, toE164PhoneNumber, type RosterImportPreview } from './rosterImport'
 import { parseProductCsv, productImportLimit, type ProductImportPreview } from './productImport'
 import './AdminConsole.css'
 
@@ -394,11 +394,12 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     if (!firestore) return
     const normalizedEmail = email.trim().toLowerCase()
     const normalizedPhone = normalizePhone(employeePhone)
+    const phoneE164 = toE164PhoneNumber(employeePhone)
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || !employeeCode.trim() ||
       employeeCode.trim().length > 80 ||
       !/^\+?[\d\s()-]{8,30}$/.test(employeePhone.trim()) ||
-      normalizedPhone.length < 8 || normalizedPhone.length > 18) {
-      onNotice('أدخل بريداً إلكترونياً صحيحاً وكوداً وظيفياً ورقم هاتف صالحاً.')
+      normalizedPhone.length < 8 || normalizedPhone.length > 18 || !phoneE164) {
+      onNotice('أدخل بريداً إلكترونياً صحيحاً وكوداً وظيفياً ورقم هاتف بالصيغة الدولية مع + ورمز الدولة.')
       return
     }
     setWorking(true)
@@ -430,11 +431,17 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         email: normalizedEmail,
         employeeCode: employeeCode.trim(),
         phone: employeePhone.trim(),
+        phoneE164,
         phoneLookup: normalizedPhone,
         currentMonthlySpent: 0,
         spendingPeriod: period,
         active: true,
         approvedBy: user.uid,
+        updatedAt: serverTimestamp(),
+      })
+      batch.set(doc(firestore, 'employee_phone_lookup', phoneE164), {
+        email: normalizedEmail,
+        phoneNumber: phoneE164,
         updatedAt: serverTimestamp(),
       })
       batch.set(doc(firestore, 'employee_sync_queue', normalizedEmail), {
@@ -446,7 +453,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       setEmail('')
       setEmployeeCode('')
       setEmployeePhone('')
-      onNotice('تم اعتماد الموظف. يمكنه التسجيل بالبريد المعتمد ثم الدخول برقمه الوظيفي أو هاتفه.')
+      onNotice('تم اعتماد الموظف. يمكنه تسجيل الدخول برمز SMS باستخدام رقم الهاتف المعتمد.')
     } catch (error) {
       console.error('Unable to add employee to the approved roster.', error)
       onNotice(firebaseErrorMessage(error))
@@ -554,11 +561,29 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           collection(database, 'employees'),
           where('email', 'in', chunk.map((row) => row.email)),
         ))
+        const rosterSnapshots = await Promise.all(chunk.map((row) =>
+          getDoc(doc(database, 'employee_roster', row.email))))
         const rowsByEmail = new Map(chunk.map((row) => [row.email, row]))
+        rosterSnapshots.forEach((snapshot) => {
+          if (!snapshot.exists()) return
+          const row = rowsByEmail.get(snapshot.id)
+          if (!row?.phone) return
+          const oldPhone = typeof snapshot.data().phoneE164 === 'string'
+            ? snapshot.data().phoneE164
+            : toE164PhoneNumber(String(snapshot.data().phone ?? ''))
+          const nextPhone = toE164PhoneNumber(row.phone)
+          if (oldPhone && oldPhone !== nextPhone) {
+            batch.delete(doc(database, 'employee_phone_lookup', oldPhone))
+          }
+        })
         chunk.forEach((row) => batch.set(doc(database, 'employee_roster', row.email), {
           email: row.email,
           employeeCode: row.employeeCode,
-          ...(row.phone ? { phone: row.phone, phoneLookup: normalizePhone(row.phone) } : {}),
+          ...(row.phone ? {
+            phone: row.phone,
+            phoneE164: toE164PhoneNumber(row.phone),
+            phoneLookup: normalizePhone(row.phone),
+          } : {}),
           ...(row.name ? { name: row.name } : {}),
           ...(row.providedFields.includes('company') ? { company: row.company || deleteField() } : {}),
           ...(row.branch ? { branch: row.branch } : {}),
@@ -575,6 +600,15 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           approvedBy: user.uid,
           updatedAt: serverTimestamp(),
         }, { merge: true }))
+        chunk.forEach((row) => {
+          const phoneNumber = toE164PhoneNumber(row.phone ?? '')
+          if (!phoneNumber) return
+          batch.set(doc(database, 'employee_phone_lookup', phoneNumber), {
+            email: row.email,
+            phoneNumber,
+            updatedAt: serverTimestamp(),
+          })
+        })
         profileSnapshot.docs.forEach((snapshot) => {
           const row = rowsByEmail.get(String(snapshot.data().email).toLowerCase())
           if (!row) return
@@ -606,7 +640,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
 
       setRosterPreview(null)
       setRosterFileName('')
-      onNotice(`تم اعتماد ${committedRows.toLocaleString('ar')} موظفاً. أصبح بإمكانهم التسجيل أو تسجيل الدخول بعد التحقق من بريدهم.`)
+      onNotice(`تم اعتماد ${committedRows.toLocaleString('ar')} موظفاً. يمكنهم تسجيل الدخول برمز SMS بعد اعتماد رقم الهاتف.`)
     } catch (error) {
       console.error(`Employee roster import stopped after ${committedRows} records.`, error)
       onNotice(committedRows
@@ -873,7 +907,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
             <label className="roster-file-button"><Upload size={15} /> اختيار ملف CSV<input type="file" accept=".csv,text/csv" disabled={working} onChange={(event) => { void readRosterFile(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = '' }} /></label>
             {rosterFileName && <span className="roster-file-name" dir="auto">{rosterFileName}</span>}
           </div>
-          <small className="employee-bulk-help">الأعمدة المطلوبة: <b dir="ltr">email, employeeCode</b>. الأعمدة الاختيارية: <b dir="ltr">company, monthlySpendingLimit, currentMonthlySpent</b>. الخانة الفارغة للشركة أو السقف تمسح قيمتها؛ والإنفاق الفارغ يصفره. الأعمدة غير الموجودة لا تغيّر بياناتها. لا تضف كلمات مرور.</small>
+          <small className="employee-bulk-help">الأعمدة المطلوبة: <b dir="ltr">email, employeeCode</b>. البريد مفتاح داخلي لسجل الموارد البشرية فقط، ولا يحتاج الموظف إلى استخدامه لتسجيل الدخول. الأعمدة الاختيارية: <b dir="ltr">company, monthlySpendingLimit, currentMonthlySpent</b>. الخانة الفارغة للشركة أو السقف تمسح قيمتها؛ والإنفاق الفارغ يصفره. الأعمدة غير الموجودة لا تغيّر بياناتها. لا تضف كلمات مرور.</small>
           {rosterPreview && <div className="roster-preview">
             <div className="roster-preview-summary"><strong>معاينة {rosterFileName}</strong><span>{rosterPreview.rows.length} سجل صالح</span><span className={rosterPreview.issues.length ? 'roster-invalid-count' : ''}>{rosterPreview.issues.length} مشكلة</span></div>
             {rosterPreview.issues.length > 0 && <div className="roster-import-issues" role="alert">{rosterPreview.issues.slice(0, 6).map((item) => <small key={item}>{item}</small>)}{rosterPreview.issues.length > 6 && <small>و{rosterPreview.issues.length - 6} مشكلات أخرى. صحّح الملف ثم أعد اختياره.</small>}</div>}
@@ -885,7 +919,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         </div>
         <div className="employee-single-heading"><strong>اعتماد موظف واحد</strong><small>استخدم هذا النموذج لإضافة موظف منفرد أو تعديل سجله.</small></div>
         <form className="employee-approval-form" onSubmit={(event) => void saveEmployee(event)}>
-          <label className="field"><span>بريد الموظف الإلكتروني</span><input required type="email" dir="ltr" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="employee@company.com" /></label>
+          <label className="field"><span>البريد الداخلي لسجل الموظف</span><input required type="email" dir="ltr" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="employee@company.com" /><small>يُستخدم لربط سجل الموارد البشرية والطلبات فقط؛ الموظف يسجل الدخول برمز SMS.</small></label>
           <label className="field"><span>الكود الوظيفي</span><input required value={employeeCode} onChange={(event) => setEmployeeCode(event.target.value)} placeholder="مثال: 10482" /></label>
           <label className="field"><span>رقم الهاتف مع رمز الدولة</span><input required type="tel" dir="ltr" value={employeePhone} onChange={(event) => setEmployeePhone(event.target.value)} placeholder="+967 7XX XXX XXX" /></label>
           <button className="admin-add-button" disabled={working}><Plus size={15} /> اعتماد الموظف</button>

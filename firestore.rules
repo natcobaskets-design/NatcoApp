@@ -15,16 +15,51 @@ service cloud.firestore {
         && get(adminPath()).data.active == true;
     }
 
+    function authEmail() {
+      return request.auth.token.get('email', '');
+    }
+
+    function authPhone() {
+      return request.auth.token.get('phone_number', '');
+    }
+
+    function phoneLookupPath() {
+      return /databases/$(database)/documents/employee_phone_lookup/$(authPhone());
+    }
+
+    function employeeEmail() {
+      return authEmail() is string && authEmail() != ''
+        ? authEmail()
+        : get(phoneLookupPath()).data.email;
+    }
+
     function rosterPath() {
-      return /databases/$(database)/documents/employee_roster/$(request.auth.token.email);
+      return /databases/$(database)/documents/employee_roster/$(employeeEmail());
+    }
+
+    function hasPhoneLookup() {
+      return signedIn()
+        && authPhone() is string
+        && authPhone().matches('^\\+[1-9][0-9]{7,14}$')
+        && exists(phoneLookupPath())
+        && get(phoneLookupPath()).data.phoneNumber == authPhone()
+        && get(phoneLookupPath()).data.email is string;
+    }
+
+    function hasVerifiedEmail() {
+      return signedIn()
+        && authEmail() is string
+        && authEmail() != ''
+        && request.auth.token.get('email_verified', false) == true;
     }
 
     function hasActiveRosterEntry() {
       return signedIn()
-        && request.auth.token.email_verified == true
-        && request.auth.token.email is string
         && exists(rosterPath())
-        && get(rosterPath()).data.active == true;
+        && get(rosterPath()).data.active == true
+        && (hasVerifiedEmail()
+          || (hasPhoneLookup()
+            && get(rosterPath()).data.get('phoneE164', '') == authPhone()));
     }
 
     function isApprovedEmployee() {
@@ -131,7 +166,11 @@ service cloud.firestore {
 
     match /employee_roster/{email} {
       allow get: if isAdmin()
-        || (signedIn() && request.auth.token.email == email);
+        || (signedIn()
+          && employeeEmail() == email
+          && (hasVerifiedEmail()
+            || (hasPhoneLookup()
+              && resource.data.get('phoneE164', '') == authPhone())));
       allow list: if isAdmin();
       allow create: if isAdmin()
         && (!request.resource.data.keys().hasAny(['company'])
@@ -157,7 +196,7 @@ service cloud.firestore {
             && request.resource.data.province.size() <= 80));
       allow update: if isAdmin()
         || (signedIn()
-          && request.auth.token.email == email
+          && employeeEmail() == email
           && resource.data.active == true
           && request.resource.data.get('employeeCode', resource.data.get('employeeCode', ''))
             == resource.data.get('employeeCode', '')
@@ -176,6 +215,13 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /employee_phone_lookup/{phoneNumber} {
+      allow get: if isAdmin()
+        || (signedIn() && authPhone() == phoneNumber);
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
     match /employees/{uid} {
       allow read: if isAdmin()
         || (signedIn() && request.auth.uid == uid
@@ -186,7 +232,7 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly([
             'email', 'name', 'address', 'coordinates', 'phone', 'whatsapp'
           ])
-          && request.resource.data.email == request.auth.token.email
+          && request.resource.data.email == employeeEmail()
           && request.resource.data.name is string
           && request.resource.data.name.size() <= 120
           && request.resource.data.address is string
@@ -283,8 +329,10 @@ service cloud.firestore {
 
     match /orders/{orderId} {
       allow get, list: if isAdmin()
-        || (signedIn() && resource.data.uid == request.auth.uid
-          && isApprovedEmployee());
+        || (signedIn()
+          && isApprovedEmployee()
+          && (resource.data.uid == request.auth.uid
+            || resource.data.email == employeeEmail()));
 
       allow create: if signedIn()
         && request.resource.data.keys().hasAll([
@@ -299,13 +347,13 @@ service cloud.firestore {
           'basketSelections', 'editCount'
         ])
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.email == employeeEmail()
         && matchesEmployeeCode(request.resource.data.employeeCode)
-        && request.resource.data.profile.email == request.auth.token.email
+        && request.resource.data.profile.email == employeeEmail()
         && request.resource.data.profile.employeeCode == request.resource.data.employeeCode
         && exists(/databases/$(database)/documents/employees/$(request.auth.uid))
         && get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.email
-          == request.auth.token.email
+          == employeeEmail()
         && request.resource.data.profile.company == get(rosterPath()).data.get('company', '')
         && request.resource.data.profile.get('monthlySpendingLimit', -1)
           == get(rosterPath()).data.get('monthlySpendingLimit', -1)
@@ -376,7 +424,7 @@ service cloud.firestore {
             .affectedKeys().hasOnly([
               'currentMonthlySpent', 'spendingPeriod', 'monthlySpendingLimit'
             ])
-          && request.resource.data.profile.get('email', '') == request.auth.token.email
+          && request.resource.data.profile.get('email', '') == employeeEmail()
           && request.resource.data.profile.get('employeeCode', '')
             == resource.data.employeeCode
           && request.resource.data.profile.get('company', '')
@@ -506,9 +554,9 @@ service cloud.firestore {
       allow create, update: if isAdmin()
         || (signedIn()
           && isApprovedEmployee()
-          && request.auth.token.email == email
+          && employeeEmail() == email
           && request.resource.data.keys().hasOnly(['email', 'status', 'updatedAt'])
-          && request.resource.data.email == request.auth.token.email
+          && request.resource.data.email == employeeEmail()
           && request.resource.data.status == 'pending'
           && request.resource.data.updatedAt == request.time);
       allow delete: if isAdmin();
@@ -522,7 +570,7 @@ service cloud.firestore {
           'uid', 'email', 'employeeCode', 'message', 'status', 'createdAt'
         ])
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.email == employeeEmail()
         && request.resource.data.employeeCode == get(rosterPath()).data.employeeCode
         && request.resource.data.message is string
         && request.resource.data.message.size() > 0
