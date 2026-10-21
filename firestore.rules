@@ -433,9 +433,6 @@ service cloud.firestore {
         && matchesEmployeeCode(request.resource.data.employeeCode)
         && request.resource.data.profile.email == employeeEmail()
         && request.resource.data.profile.employeeCode == request.resource.data.employeeCode
-        && exists(/databases/$(database)/documents/employees/$(request.auth.uid))
-        && get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.email
-          == employeeEmail()
         && request.resource.data.profile.company == get(rosterPath()).data.get('company', '')
         && request.resource.data.profile.get('monthlySpendingLimit', -1)
           == get(rosterPath()).data.get('monthlySpendingLimit', -1)

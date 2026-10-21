@@ -414,6 +414,14 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         phoneDigits: request.phoneDigits,
         updatedAt: serverTimestamp(),
       })
+      batch.set(doc(firestore, 'employees', request.uid), {
+        email: employee.email,
+        name: employee.name,
+        address: employee.address,
+        coordinates: employee.coordinates,
+        phone: employee.phone,
+        whatsapp: employee.whatsapp,
+      }, { merge: true })
       batch.update(doc(firestore, 'employee_signup_requests', request.uid), {
         status: 'approved',
         reviewedBy: user.uid,
