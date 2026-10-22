@@ -187,10 +187,12 @@ function App() {
     uid: string
     mode: 'admin' | 'employee'
     items: AppNotification[]
+    loaded: boolean
   }>({
     uid: '',
     mode: 'employee',
     items: [],
+    loaded: false,
   })
   const [organizationOptions, setOrganizationOptions] = useState<OrganizationOptions>(defaultOrganizationOptions)
   const [email, setEmail] = useState('')
@@ -224,6 +226,8 @@ function App() {
   const notifications = notificationFeed.uid === authUser?.uid && notificationFeed.mode === notificationMode
     ? notificationFeed.items
     : []
+  const notificationsLoaded = notificationFeed.uid === authUser?.uid &&
+    notificationFeed.mode === notificationMode && notificationFeed.loaded
   const identityReady = !authUser || resolvedIdentityUid === authUser.uid
   const screenRef = useRef(screen)
   const selectedOrderIdRef = useRef(selectedOrderId)
@@ -610,7 +614,12 @@ function App() {
         if (!notification) console.error(`Skipping malformed notification ${item.id}.`)
         return notification ? [notification] : []
       }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 15)
-      setNotificationFeed({ uid: authUser.uid, mode: notificationMode, items: latestNotifications })
+      setNotificationFeed({
+        uid: authUser.uid,
+        mode: notificationMode,
+        items: latestNotifications,
+        loaded: true,
+      })
     }, (error) => {
       console.error('Unable to load notification updates.', error)
       setNotice(firebaseErrorMessage(error))
@@ -1218,6 +1227,7 @@ function App() {
     selectedProducts={selectedProducts}
     employeeOrders={employeeOrders}
     notifications={notifications}
+    notificationsLoaded={notificationsLoaded}
     onOrganizationOptionsChange={setOrganizationOptions}
     loginProps={{
       hasSession: Boolean(authUser),

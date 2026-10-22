@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { motion, useReducedMotion } from 'framer-motion'
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import type { User } from 'firebase/auth'
 import {
   Bell, Check, ChevronDown, CircleHelp, ClipboardList, Gift, Home, LogOut, Package,
@@ -25,6 +25,30 @@ export type AppNotification = {
   updatedAt: string
 }
 
+type NotificationPopup = { key: string; notification: AppNotification }
+
+let notificationAudioContext: AudioContext | null = null
+
+async function playNotificationSound(): Promise<void> {
+  if (typeof window === 'undefined' || !window.AudioContext) return
+  notificationAudioContext ??= new AudioContext()
+  const context = notificationAudioContext
+  if (context.state === 'suspended') await context.resume()
+  const oscillator = context.createOscillator()
+  const volume = context.createGain()
+  const start = context.currentTime
+  oscillator.type = 'sine'
+  oscillator.frequency.setValueAtTime(740, start)
+  oscillator.frequency.setValueAtTime(880, start + 0.09)
+  volume.gain.setValueAtTime(0.0001, start)
+  volume.gain.exponentialRampToValueAtTime(0.07, start + 0.015)
+  volume.gain.exponentialRampToValueAtTime(0.0001, start + 0.24)
+  oscillator.connect(volume)
+  volume.connect(context.destination)
+  oscillator.start(start)
+  oscillator.stop(start + 0.25)
+}
+
 function loadReadNotificationKeys(uid?: string): Set<string> {
   if (!uid) return new Set()
   try {
@@ -36,6 +60,21 @@ function loadReadNotificationKeys(uid?: string): Set<string> {
       : new Set()
   } catch (error) {
     console.warn('Unable to restore notification read state.', error)
+    return new Set()
+  }
+}
+
+function loadDismissedNotificationKeys(uid?: string): Set<string> {
+  if (!uid) return new Set()
+  try {
+    const saved = localStorage.getItem(`natco.notifications.dismissed.${uid}`)
+    if (!saved) return new Set()
+    const parsed: unknown = JSON.parse(saved)
+    return Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')
+      ? new Set(parsed.slice(-100))
+      : new Set()
+  } catch (error) {
+    console.warn('Unable to restore dismissed notification state.', error)
     return new Set()
   }
 }
@@ -63,6 +102,7 @@ type AppLayoutProps = {
   supportContactUnavailable: boolean
   notice: string
   setNotice: (notice: string) => void
+  notificationsLoaded: boolean
   totalBaskets: number
   selectedProducts: number
   employeeOrders: Order[]
@@ -89,8 +129,17 @@ export function AppLayout(props: AppLayoutProps) {
   const [readNotificationKeys, setReadNotificationKeys] = useState<Set<string>>(
     () => loadReadNotificationKeys(authUser?.uid),
   )
+  const [dismissedNotificationKeys, setDismissedNotificationKeys] = useState<Set<string>>(
+    () => loadDismissedNotificationKeys(authUser?.uid),
+  )
+  const [incomingNotification, setIncomingNotification] = useState<NotificationPopup | null>(null)
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>(
+    () => typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
+  )
   const accountMenuRef = useRef<HTMLDivElement>(null)
   const notificationsRef = useRef<HTMLDivElement>(null)
+  const seenNotificationsRef = useRef<{ mode: string; keys: Set<string> } | null>(null)
+  const popupTimeoutRef = useRef<number | null>(null)
   const accountName = isEmployee && profile.name
     ? profile.name
     : authUser?.displayName || authUser?.email?.split('@')[0] || 'الحساب'
@@ -105,10 +154,16 @@ export function AppLayout(props: AppLayoutProps) {
     setScreen('orders')
   }
 
-  const notificationKey = (notification: AppNotification) =>
-    `${authUser?.uid ?? 'anonymous'}:${notification.id}:${notification.updatedAt}`
+  const notificationKey = useCallback(
+    (notification: AppNotification) =>
+      `${authUser?.uid ?? 'anonymous'}:${notification.id}:${notification.updatedAt}`,
+    [authUser?.uid],
+  )
+  const visibleNotifications = props.notifications.filter(
+    (notification) => !dismissedNotificationKeys.has(notificationKey(notification)),
+  )
   const showAdminNotifications = isAdmin && (!isEmployee || screen === 'admin')
-  const unreadCount = props.notifications.filter(
+  const unreadCount = visibleNotifications.filter(
     (notification) => !readNotificationKeys.has(notificationKey(notification)),
   ).length
 
@@ -134,6 +189,59 @@ export function AppLayout(props: AppLayoutProps) {
     }
   }, [accountMenuOpen, notificationsOpen])
 
+  useEffect(() => {
+    if (!authUser || !props.notificationsLoaded) {
+      seenNotificationsRef.current = null
+      return
+    }
+    const mode = showAdminNotifications ? 'admin' : 'employee'
+    const currentKeys = new Set(props.notifications.map(notificationKey))
+    const previous = seenNotificationsRef.current
+    seenNotificationsRef.current = { mode, keys: currentKeys }
+    if (!previous || previous.mode !== mode) return
+
+    const newestNotification = props.notifications.find(
+      (notification) => !previous.keys.has(notificationKey(notification)),
+    )
+    if (!newestNotification) return
+
+    const key = notificationKey(newestNotification)
+    if (dismissedNotificationKeys.has(key)) return
+    setIncomingNotification({ key, notification: newestNotification })
+    if (popupTimeoutRef.current !== null) window.clearTimeout(popupTimeoutRef.current)
+    popupTimeoutRef.current = window.setTimeout(() => {
+      setIncomingNotification((current) => current?.key === key ? null : current)
+    }, 2200)
+    void playNotificationSound().catch((error: unknown) => {
+      console.warn('Unable to play the new-notification sound. Enable sound from the notification menu.', error)
+    })
+    if (document.hidden && notificationPermission === 'granted' && typeof Notification !== 'undefined') {
+      try {
+        new Notification(showAdminNotifications ? 'إشعار جديد من ناتكو' : 'تحديث جديد لطلبك', {
+          body: newestNotification.status === 'received'
+            ? 'تم استلام طلب جديد.'
+            : `حالة الطلب: ${orderStatusLabels[newestNotification.status]}`,
+          icon: `${import.meta.env.BASE_URL}natco-logo.jpg`,
+          tag: key,
+        })
+      } catch (error) {
+        console.warn('Unable to show the browser notification.', error)
+      }
+    }
+  }, [
+    authUser,
+    dismissedNotificationKeys,
+    notificationKey,
+    notificationPermission,
+    props.notifications,
+    props.notificationsLoaded,
+    showAdminNotifications,
+  ])
+
+  useEffect(() => () => {
+    if (popupTimeoutRef.current !== null) window.clearTimeout(popupTimeoutRef.current)
+  }, [])
+
   function markNotificationsRead(notifications: AppNotification[]) {
     if (!authUser) return
     setReadNotificationKeys((current) => {
@@ -151,6 +259,44 @@ export function AppLayout(props: AppLayoutProps) {
     })
   }
 
+  function dismissNotifications(notifications: AppNotification[]) {
+    if (!authUser || notifications.length === 0) return
+    setDismissedNotificationKeys((current) => {
+      const next = new Set([...current, ...notifications.map(notificationKey)].values())
+      const bounded = new Set([...next].slice(-100))
+      try {
+        localStorage.setItem(
+          `natco.notifications.dismissed.${authUser.uid}`,
+          JSON.stringify([...bounded]),
+        )
+      } catch (error) {
+        console.warn('Unable to save dismissed notifications.', error)
+      }
+      return bounded
+    })
+  }
+
+  async function enablePhoneNotifications() {
+    if (typeof Notification === 'undefined') {
+      setNotificationPermission('unsupported')
+      setNotice('هذا المتصفح لا يدعم إشعارات النظام. تبقى تنبيهات الجرس داخل التطبيق متاحة.')
+      return
+    }
+    try {
+      const permission = await Notification.requestPermission()
+      setNotificationPermission(permission)
+      if (permission === 'granted') {
+        await playNotificationSound()
+        setNotice('تم تفعيل إشعارات المتصفح والصوت. يلزم إبقاء التطبيق مفتوحاً لاستقبال التحديثات.')
+      } else {
+        setNotice('لم يتم منح إذن إشعارات الجهاز. يمكنك تغييره من إعدادات المتصفح.')
+      }
+    } catch (error) {
+      console.error('Unable to request browser notification permission.', error)
+      setNotice('تعذر طلب إذن الإشعارات من المتصفح. تحقق من إعدادات الموقع وحاول مجدداً.')
+    }
+  }
+
   function openNotification(notification: AppNotification) {
     markNotificationsRead([notification])
     setNotificationsOpen(false)
@@ -160,12 +306,23 @@ export function AppLayout(props: AppLayoutProps) {
       setScreen('admin')
       return
     }
+
     const order = employeeOrders.find((item) => item.id === notification.orderId)
     if (order) props.receiptProps.onSelect(order)
     else {
       setScreen('orders')
       setNotice('تعذر تحميل تفاصيل هذا الطلب الآن. حدّث سجل الطلبات ثم حاول مجدداً.')
     }
+  }
+
+  function openIncomingNotification() {
+    if (!incomingNotification) return
+    const notification = props.notifications.find(
+      (item) => notificationKey(item) === incomingNotification.key,
+    )
+    setIncomingNotification(null)
+    if (popupTimeoutRef.current !== null) window.clearTimeout(popupTimeoutRef.current)
+    if (notification) openNotification(notification)
   }
 
   function switchWorkspace() {
@@ -243,6 +400,39 @@ export function AppLayout(props: AppLayoutProps) {
               <Bell size={19} />
               {unreadCount > 0 && <span className="notification-count">{unreadCount > 9 ? '٩+' : unreadCount.toLocaleString('ar')}</span>}
             </button>
+            <AnimatePresence>
+              {incomingNotification && <motion.div
+                className="notification-popup"
+                initial={reduceMotion ? false : { opacity: 0, y: -14, scale: 0.92, height: 0 }}
+                animate={{ opacity: 1, y: 8, scale: 1, height: 'auto' }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.96, height: 0 }}
+                transition={reduceMotion
+                  ? { duration: 0 }
+                  : { type: 'spring', stiffness: 350, damping: 26 }}
+                aria-live="polite"
+              >
+                <button type="button" className="notification-popup-open" onClick={openIncomingNotification}>
+                  <span className={`notification-item-icon status-${incomingNotification.notification.status}`}><Bell size={16} /></span>
+                  <span className="notification-item-copy">
+                    <strong>{showAdminNotifications ? 'إشعار جديد من الموظفين' : 'لديك تحديث جديد'}</strong>
+                    <small>
+                      {incomingNotification.notification.status === 'received'
+                        ? showAdminNotifications ? 'تم استلام طلب جديد أو تعديل.' : 'تم استلام طلبك بنجاح.'
+                        : `حالة الطلب: ${orderStatusLabels[incomingNotification.notification.status]}`}
+                    </small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="notification-popup-close"
+                  aria-label="إغلاق الإشعار"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setIncomingNotification(null)
+                  }}
+                ><X size={14} /></button>
+              </motion.div>}
+            </AnimatePresence>
             {notificationsOpen && <motion.div
               className="notification-panel"
               role="dialog"
@@ -253,12 +443,22 @@ export function AppLayout(props: AppLayoutProps) {
             >
               <div className="notification-panel-heading">
                 <div><strong>الإشعارات</strong><small>{showAdminNotifications ? 'مستجدات الطلبات' : 'تحديثات طلباتك'}</small></div>
-                {unreadCount > 0 && <button type="button" onClick={() => markNotificationsRead(props.notifications)}>تمت القراءة</button>}
+                <div className="notification-heading-actions">
+                  {unreadCount > 0 && <button type="button" onClick={() => markNotificationsRead(visibleNotifications)}>تمت القراءة</button>}
+                  {visibleNotifications.length > 0 && <button type="button" className="notification-clear-button" onClick={() => dismissNotifications(visibleNotifications)}>حذف الكل</button>}
+                </div>
               </div>
-              {props.notifications.length === 0
+              <div className="notification-settings">
+                {notificationPermission === 'default' && <button type="button" onClick={() => void enablePhoneNotifications()}>تفعيل إشعارات الجهاز</button>}
+                {notificationPermission === 'granted' && <span><Check size={13} /> إذن إشعارات المتصفح مفعّل</span>}
+                {notificationPermission === 'denied' && <span>إذن إشعارات الجهاز مرفوض؛ فعّله من إعدادات المتصفح.</span>}
+                {notificationPermission === 'unsupported' && <span>إشعارات النظام غير مدعومة في هذا المتصفح.</span>}
+                <button type="button" onClick={() => void playNotificationSound().catch(() => setNotice('تعذر تشغيل الصوت؛ تحقق من إعدادات الصوت في الجهاز.'))}>اختبار الصوت</button>
+              </div>
+              {visibleNotifications.length === 0
                 ? <div className="notification-empty"><Bell size={20} /><span>لا توجد إشعارات حتى الآن.</span></div>
                 : <div className="notification-list">
-                  {props.notifications.map((notification) => {
+                  {visibleNotifications.map((notification) => {
                     const order = employeeOrders.find((item) => item.id === notification.orderId)
                     const reference = order?.reference ?? `NATCO-${notification.orderId.slice(-6).toUpperCase()}`
                     const isReceived = notification.status === 'received'
@@ -268,19 +468,26 @@ export function AppLayout(props: AppLayoutProps) {
                     const message = showAdminNotifications
                       ? `${reference} · ${isReceived ? 'بانتظار المراجعة' : orderStatusLabels[notification.status]}`
                       : `${reference} · ${orderStatusLabels[notification.status]}`
-                    return <button
-                      type="button"
-                      className="notification-item"
-                      key={notificationKey(notification)}
-                      onClick={() => openNotification(notification)}
-                    >
-                      <span className={`notification-item-icon status-${notification.status}`}><ClipboardList size={16} /></span>
-                      <span className="notification-item-copy">
-                        <strong>{title}</strong><small>{message}</small>
-                        <time>{new Intl.DateTimeFormat('ar-YE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(notification.updatedAt))}</time>
-                      </span>
-                      <ChevronDown className="notification-item-arrow" size={15} />
-                    </button>
+                    return <div className="notification-row" key={notificationKey(notification)}>
+                      <button
+                        type="button"
+                        className="notification-item"
+                        onClick={() => openNotification(notification)}
+                      >
+                        <span className={`notification-item-icon status-${notification.status}`}><ClipboardList size={16} /></span>
+                        <span className="notification-item-copy">
+                          <strong>{title}</strong><small>{message}</small>
+                          <time>{new Intl.DateTimeFormat('ar-YE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(notification.updatedAt))}</time>
+                        </span>
+                        <ChevronDown className="notification-item-arrow" size={15} />
+                      </button>
+                      <button
+                        className="notification-dismiss"
+                        type="button"
+                        aria-label={`حذف إشعار ${reference}`}
+                        onClick={() => dismissNotifications([notification])}
+                      ><X size={14} /></button>
+                    </div>
                   })}
                 </div>}
             </motion.div>}
