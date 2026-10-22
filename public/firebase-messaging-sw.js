@@ -71,7 +71,12 @@ self.addEventListener('notificationclick', (event) => {
   })())
 })
 
-if (firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.appId) {
+if (
+  firebaseConfig.apiKey &&
+  firebaseConfig.projectId &&
+  firebaseConfig.appId &&
+  firebaseConfig.messagingSenderId
+) {
   importScripts(
     `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app-compat.js`,
     `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-messaging-compat.js`,
