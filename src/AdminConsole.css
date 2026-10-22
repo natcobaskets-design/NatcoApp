@@ -203,10 +203,24 @@
 .roster-preview-summary span.roster-invalid-count { background: #fff0ed; color: #a84f49; }
 .roster-import-issues { display: grid; gap: 3px; padding: 7px; border-radius: 5px; background: #fff5f3; color: #a34f48; }
 .roster-import-issues small { font-size: 8px; line-height: 1.6; }
+.roster-import-table-wrap { width: 100%; max-height: 390px; overflow: auto; border: 1px solid #e8ebf1; border-radius: 7px; background: #fff; }
+.roster-import-table { width: 100%; min-width: 1680px; border-collapse: collapse; text-align: right; }
+.roster-import-table th,.roster-import-table td { padding: 6px; border-bottom: 1px solid #edf0f4; vertical-align: middle; }
+.roster-import-table th { position: sticky; top: 0; z-index: 1; color: #53617d; background: #f8fafc; font-size: 8px; white-space: nowrap; }
+.roster-import-table td input { width: 100%; min-width: 85px; min-height: 30px; padding: 4px 6px; border: 1px solid #e3e7ee; border-radius: 5px; color: #35415b; background: #fff; font: 9px Arial,sans-serif; }
+.roster-import-table td select { width: 100%; min-width: 105px; min-height: 30px; padding: 4px 6px; border: 1px solid #e3e7ee; border-radius: 5px; color: #35415b; background: #fff; font: 9px Arial,sans-serif; }
+.roster-import-table td input:focus { outline: 2px solid #f5822033; border-color: #f58220; }
+.roster-import-table td small { display: block; min-width: 115px; color: #778198; font-size: 8px; line-height: 1.5; }
+.roster-import-table td .roster-row-corrections { color: #397b59; }
+.roster-import-table td .roster-row-problem { color: #a84f49; }
 .roster-preview-list { display: grid; gap: 4px; }
 .roster-preview-list > div { display: flex; justify-content: space-between; gap: 8px; padding: 5px 7px; border: 1px solid #eef0f4; border-radius: 5px; background: #fff; color: #69738a; font-size: 8px; }
 .roster-preview-list > div > span:first-child { overflow: hidden; text-overflow: ellipsis; }
 .roster-import-button { justify-self: start; }
+.employee-signup-request-details { flex: 1; }
+.employee-signup-request-details .field { display: grid; gap: 4px; }
+.employee-signup-request-details .field span { color: #68738a; font-size: 8px; }
+.employee-signup-request-details .field input { width: 100%; min-height: 32px; padding: 5px 7px; border: 1px solid #e1e5ed; border-radius: 5px; color: #35415b; background: #fff; font: 10px Arial,sans-serif; }
 .employee-single-heading { margin: 4px 0 9px; }
 .roster-list { margin-top: 10px; }
 .roster-row { min-height: 50px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid #f0f1f4; }

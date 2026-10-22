@@ -75,6 +75,7 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
   const [draft, setDraft] = useState<EmployeeRecord>(blankRecord)
   const [passwordLoginEmails, setPasswordLoginEmails] = useState<Set<string>>(new Set())
   const [signupRequests, setSignupRequests] = useState<EmployeeSignupRequest[]>([])
+  const [signupEdits, setSignupEdits] = useState<Record<string, Pick<EmployeeSignupRequest, 'name' | 'employeeCode'>>>({})
   const [employeePassword, setEmployeePassword] = useState('')
   const [employeePasswordConfirmation, setEmployeePasswordConfirmation] = useState('')
   const [working, setWorking] = useState(false)
@@ -376,8 +377,14 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
     }
   }
 
-  async function approveSignupRequest(request: EmployeeSignupRequest) {
+  async function approveSignupRequest(request: EmployeeSignupRequest, name: string, employeeCode: string) {
     if (!firestore) return
+    const approvedName = name.trim()
+    const approvedCode = employeeCode.trim()
+    if (!approvedName || approvedName.length > 120 || !approvedCode || approvedCode.length > 80) {
+      onNotice('أدخل الاسم الكامل والكود الوظيفي الصحيحين قبل اعتماد الطلب.')
+      return
+    }
     const matchingEmployees = records.filter((record) =>
       (record.phoneE164 || toE164PhoneNumber(record.phone)) === request.phoneNumber && record.active)
     if (matchingEmployees.length !== 1) {
@@ -387,8 +394,9 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
       return
     }
     const employee = matchingEmployees[0]
-    if (request.employeeCode && employee.employeeCode.trim() !== request.employeeCode.trim()) {
-      onNotice('الرقم الوظيفي في طلب التسجيل لا يطابق سجل الموظف. تحقق من البيانات قبل الاعتماد.')
+    if (records.some((record) =>
+      record.email !== employee.email && record.employeeCode.trim() === approvedCode)) {
+      onNotice('الكود الوظيفي مرتبط بسجل موظف آخر؛ صححه قبل اعتماد الطلب.')
       return
     }
     const expectedAuthEmail = employeePasswordLoginEmail(request.phoneNumber, firebaseProjectId)
@@ -407,6 +415,17 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
         return
       }
       const batch = writeBatch(firestore)
+      batch.set(doc(firestore, 'employee_roster', employee.email), {
+        name: approvedName,
+        employeeCode: approvedCode,
+        updatedAt: serverTimestamp(),
+        approvedBy: user.uid,
+      }, { merge: true })
+      batch.set(doc(firestore, 'employee_sync_queue', employee.email), {
+        email: employee.email,
+        status: 'pending',
+        updatedAt: serverTimestamp(),
+      })
       batch.set(lookupRef, {
         authEmail: request.authEmail,
         email: employee.email,
@@ -416,7 +435,8 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
       })
       batch.set(doc(firestore, 'employees', request.uid), {
         email: employee.email,
-        name: employee.name,
+        name: approvedName,
+        employeeCode: approvedCode,
         address: employee.address,
         coordinates: employee.coordinates,
         phone: employee.phone,
@@ -429,7 +449,12 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
       })
       await batch.commit()
       setPasswordLoginEmails((current) => new Set(current).add(employee.email))
-      onNotice(`تم اعتماد طلب ${request.name} وربط الحساب بالموظف ${employee.employeeCode}. يمكن للموظف تسجيل الدخول الآن.`)
+      setSignupEdits((current) => {
+        const next = { ...current }
+        delete next[request.uid]
+        return next
+      })
+      onNotice(`تم اعتماد ${approvedName} بالكود الوظيفي ${approvedCode}، وربط حساب Firebase بسجل الموظف. يمكنه تسجيل الدخول الآن.`)
     } catch (error) {
       console.error(`Unable to approve employee signup request ${request.uid}.`, error)
       onNotice(firebaseErrorMessage(error))
@@ -554,14 +579,19 @@ export function AdminEmployeeProfiles({ user, organizationOptions, onNotice }: P
       <div className="employee-signup-request-list">{signupRequests.map((request) => {
         const phoneMatches = records.filter((record) =>
           (record.phoneE164 || toE164PhoneNumber(record.phone)) === request.phoneNumber && record.active)
-        const matchingEmployee = phoneMatches.length === 1 &&
-          (!request.employeeCode || phoneMatches[0].employeeCode.trim() === request.employeeCode.trim())
-          ? phoneMatches[0]
-          : null
+        const matchingEmployee = phoneMatches.length === 1 ? phoneMatches[0] : null
+        const edits = signupEdits[request.uid]
+        const requestName = edits?.name ?? request.name ?? matchingEmployee?.name ?? ''
+        const requestCode = edits?.employeeCode ?? request.employeeCode ?? matchingEmployee?.employeeCode ?? ''
         return <article key={request.uid}>
-          <div><strong>{request.name || 'اسم غير محدد'}</strong><span dir="ltr">{request.phoneNumber}</span><small>الكود الوظيفي في الطلب: {request.employeeCode || 'غير متوفر'} · {matchingEmployee ? `الموظف المطابق: ${matchingEmployee.name} (${matchingEmployee.employeeCode})` : 'لا يوجد سجل موظف نشط وفريد يطابق الهاتف والكود'}</small></div>
+          <div className="employee-signup-request-details">
+            <strong>بيانات طلب التسجيل</strong><span dir="ltr">{request.phoneNumber}</span>
+            <label className="field"><span>الاسم الكامل</span><input required maxLength={120} value={requestName} onChange={(event) => setSignupEdits((current) => ({ ...current, [request.uid]: { name: event.target.value, employeeCode: requestCode } }))} /></label>
+            <label className="field"><span>الكود الوظيفي</span><input required maxLength={80} value={requestCode} onChange={(event) => setSignupEdits((current) => ({ ...current, [request.uid]: { name: requestName, employeeCode: event.target.value } }))} /></label>
+            <small>{matchingEmployee ? `السجل المطابق بالهاتف: ${matchingEmployee.name || 'اسم غير مسجل'} (${matchingEmployee.employeeCode || 'كود غير مسجل'}).` : 'لا يوجد سجل موظف نشط وفريد يطابق رقم الهاتف.'} سيتم حفظ الاسم والكود المدخلين في ملف الموظف عند الاعتماد.</small>
+          </div>
           <div className="employee-profile-editor-actions">
-            <button type="button" className="admin-add-button" disabled={working || !matchingEmployee} onClick={() => void approveSignupRequest(request)}>اعتماد وربط الحساب</button>
+            <button type="button" className="admin-add-button" disabled={working || !matchingEmployee || !requestName.trim() || !requestCode.trim()} onClick={() => void approveSignupRequest(request, requestName, requestCode)}>اعتماد وربط الحساب</button>
             <button type="button" className="employee-profile-state-button" disabled={working} onClick={() => void rejectSignupRequest(request)}>رفض الطلب</button>
           </div>
         </article>

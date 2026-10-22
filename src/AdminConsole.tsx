@@ -21,7 +21,7 @@ import {
   orderStatusLabels, parseCatalogProduct, parseOrder, productCatalogSeed,
   productDepartments, type CatalogProduct, type Order, type OrderStatus, type OrganizationOptions,
 } from './domain'
-import { normalizePhone, parseRosterCsv, rosterImportLimit, toE164PhoneNumber, type RosterImportPreview } from './rosterImport'
+import { decodeRosterCsv, normalizeCsvNumber, normalizePhone, parseRosterCsv, rosterImportLimit, rosterImportRowIssues, toE164PhoneNumber, type RosterImportPreview } from './rosterImport'
 import { employeePasswordLoginEmail } from './employeeLogin'
 import { parseProductCsv, productImportLimit, type ProductImportPreview } from './productImport'
 import './AdminConsole.css'
@@ -79,6 +79,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
   const [previewUrl, setPreviewUrl] = useState('')
   const previewRef = useRef('')
   const [email, setEmail] = useState('')
+  const [employeeName, setEmployeeName] = useState('')
   const [employeeCode, setEmployeeCode] = useState('')
   const [employeePhone, setEmployeePhone] = useState('')
   const [rosterFileName, setRosterFileName] = useState('')
@@ -392,14 +393,16 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
   async function saveEmployee(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!firestore) return
-    const normalizedEmail = email.trim().toLowerCase()
     const normalizedPhone = normalizePhone(employeePhone)
     const phoneE164 = toE164PhoneNumber(employeePhone)
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || !employeeCode.trim() ||
+    const suppliedEmail = email.trim().toLowerCase()
+    const normalizedEmail = suppliedEmail || employeePasswordLoginEmail(phoneE164, firebaseProjectId)
+    if (!normalizedEmail || (suppliedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) ||
+      !employeeName.trim() || employeeName.trim().length > 120 || !employeeCode.trim() ||
       employeeCode.trim().length > 80 ||
       !/^\+?[\d\s()-]{8,30}$/.test(employeePhone.trim()) ||
       normalizedPhone.length < 8 || normalizedPhone.length > 18 || !phoneE164) {
-      onNotice('أدخل بريداً إلكترونياً صحيحاً وكوداً وظيفياً ورقم هاتف بالصيغة الدولية مع + ورمز الدولة.')
+      onNotice('أدخل اسم الموظف ورقمه الوظيفي، وتحقق من الهاتف الدولي. البريد اختياري.')
       return
     }
     setWorking(true)
@@ -429,6 +432,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       const batch = writeBatch(firestore)
       batch.set(rosterRef, {
         email: normalizedEmail,
+        name: employeeName.trim(),
         employeeCode: employeeCode.trim(),
         phone: employeePhone.trim(),
         phoneE164,
@@ -451,9 +455,10 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       })
       await batch.commit()
       setEmail('')
+      setEmployeeName('')
       setEmployeeCode('')
       setEmployeePhone('')
-      onNotice('تم اعتماد سجل الموظف. أنشئ حساب Email/Password بعنوان الدخول الداخلي من Firebase Authentication، ثم فعّل ربطه من تعديل ملف الموظف.')
+      onNotice('تم اعتماد سجل الموظف. إذا لم تدخل بريداً داخلياً، استُخدم معرّف دخول Firebase المشتق من الهاتف.')
     } catch (error) {
       console.error('Unable to add employee to the approved roster.', error)
       onNotice(firebaseErrorMessage(error))
@@ -487,7 +492,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       return
     }
     try {
-      const preview = parseRosterCsv(await file.text())
+      const preview = parseRosterCsv(decodeRosterCsv(await file.arrayBuffer()), organizationOptions, firebaseProjectId)
       if (preview.totalRows > rosterImportLimit) {
         preview.rows = []
         preview.issues.push(`يتجاوز الملف الحد الأعلى ${rosterImportLimit.toLocaleString('ar')} موظف في المرة الواحدة.`)
@@ -500,6 +505,38 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     }
   }
 
+  function updateRosterRow(index: number, values: Partial<RosterImportPreview['rows'][number]>) {
+    setRosterPreview((current) => current ? {
+      ...current,
+      rows: current.rows.map((row, rowIndex) => {
+        if (rowIndex !== index) return row
+        const updated = { ...row, ...values }
+        if (values.email !== undefined) updated.emailProvided = Boolean(values.email.trim())
+        const changedFields = [
+          ...(values.company !== undefined ? ['الشركة:'] : []),
+          ...(values.branch !== undefined ? ['الفرع:'] : []),
+          ...(values.province !== undefined ? ['المحافظة:'] : []),
+        ]
+        if (changedFields.length) {
+          updated.corrections = row.corrections.filter((correction) =>
+            !changedFields.some((field) => correction.startsWith(field)))
+        }
+        const oldGeneratedEmail = employeePasswordLoginEmail(toE164PhoneNumber(row.phone ?? ''), firebaseProjectId)
+        if (values.phone && row.email === oldGeneratedEmail) {
+          updated.email = employeePasswordLoginEmail(toE164PhoneNumber(values.phone), firebaseProjectId)
+        }
+        return updated
+      }),
+    } : current)
+  }
+
+  function removeRosterRow(index: number) {
+    setRosterPreview((current) => current ? {
+      ...current,
+      rows: current.rows.filter((_, rowIndex) => rowIndex !== index),
+    } : current)
+  }
+
   async function importEmployees() {
     if (!firestore || !rosterPreview || !rosterPreview.rows.length || rosterPreview.issues.length) return
     const database = firestore
@@ -507,7 +544,49 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     setImportedRows(0)
     let committedRows = 0
     try {
-      const rows = rosterPreview.rows
+      const rows = rosterPreview.rows.map((row) => ({
+        ...row,
+        email: row.emailProvided ? row.email.trim().toLowerCase() :
+          row.email.trim().toLowerCase() ||
+          employeePasswordLoginEmail(toE164PhoneNumber(row.phone ?? ''), firebaseProjectId),
+        employeeCode: row.employeeCode.trim(),
+        name: row.name?.trim() ?? '',
+        monthlySpendingLimit: row.monthlySpendingLimitRaw?.trim()
+          ? normalizeCsvNumber(row.monthlySpendingLimitRaw) : undefined,
+        currentMonthlySpent: row.currentMonthlySpentRaw?.trim()
+          ? normalizeCsvNumber(row.currentMonthlySpentRaw) : undefined,
+        active: row.activeRaw?.trim()
+          ? ['true', '1', 'active', 'نشط', 'معتمد'].includes(row.activeRaw.trim().toLowerCase().replace(/\s/g, ''))
+          : undefined,
+      }))
+      const invalidRow = rows.find((row) => rosterImportRowIssues(row, organizationOptions).length > 0)
+      if (invalidRow) {
+        onNotice(`صحح بيانات الصف ${invalidRow.line}: ${rosterImportRowIssues(invalidRow, organizationOptions).join(' ')}`)
+        return
+      }
+      const codes = new Set<string>()
+      const phones = new Set<string>()
+      for (const row of rows) {
+        const phoneKey = row.phone ? normalizePhone(row.phone) : ''
+        if (codes.has(row.employeeCode) || (phoneKey && phones.has(phoneKey))) {
+          onNotice(`الكود الوظيفي أو الهاتف مكرر في الصف ${row.line}. صحح البيانات قبل الاعتماد.`)
+          return
+        }
+        codes.add(row.employeeCode)
+        if (phoneKey) phones.add(phoneKey)
+      }
+      const invalidFields = rows.find((row) =>
+        row.name.length > 120 || (row.company?.length ?? 0) > 80 ||
+        (row.branch?.length ?? 0) > 80 || (row.province?.length ?? 0) > 80 ||
+        (row.address?.length ?? 0) > 500 || (row.coordinates?.length ?? 0) > 100 ||
+        (row.phone?.length ?? 0) > 30 || (row.whatsapp?.length ?? 0) > 30 ||
+        Boolean(row.phone && (!/^\+?[\d\s()-]{8,30}$/.test(row.phone) ||
+          normalizePhone(row.phone).length < 8 || normalizePhone(row.phone).length > 18 ||
+          !toE164PhoneNumber(row.phone))))
+      if (invalidFields) {
+        onNotice(`تحقق من طول أو تنسيق بيانات الصف ${invalidFields.line} قبل الاعتماد.`)
+        return
+      }
       const unknownCompany = rows.find((row) => row.company &&
         !organizationOptions.companies.some((company) => company.name === row.company))
       if (unknownCompany) {
@@ -531,27 +610,55 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           collection(database, 'employee_roster'),
           where('employeeCode', 'in', chunk.map((row) => row.employeeCode)),
         ))
-        const emailsByCode = new Map(chunk.map((row) => [row.employeeCode, row.email]))
-        const duplicateCode = codeMatches.docs.find((item) =>
-          emailsByCode.get(String(item.data().employeeCode)) !== item.id)
-        if (duplicateCode) {
-          onNotice(`الكود الوظيفي ${duplicateCode.data().employeeCode} مرتبط ببريد آخر.`)
-          return
-        }
         const phoneRows = chunk.filter((row) => row.phone)
-        if (phoneRows.length) {
-          const phoneMatches = await getDocs(query(
+        const phoneMatches = phoneRows.length ? await getDocs(query(
             collection(database, 'employee_roster'),
             where('phoneLookup', 'in', phoneRows.map((row) => normalizePhone(row.phone ?? ''))),
-          ))
-          const emailsByPhone = new Map(phoneRows.map((row) => [normalizePhone(row.phone ?? ''), row.email]))
-          const duplicatePhone = phoneMatches.docs.find((item) =>
-            emailsByPhone.get(String(item.data().phoneLookup)) !== item.id)
-          if (duplicatePhone) {
-            onNotice(`رقم الهاتف في سجل ${duplicatePhone.id} مرتبط بموظف آخر.`)
+          )) : null
+        for (const row of chunk) {
+          const codeMatch = codeMatches.docs.find((item) =>
+            String(item.data().employeeCode ?? '').trim() === row.employeeCode)
+          const phoneMatch = phoneMatches?.docs.find((item) =>
+            String(item.data().phoneLookup ?? '') === normalizePhone(row.phone ?? ''))
+          if (codeMatch && phoneMatch && codeMatch.id !== phoneMatch.id) {
+            onNotice(`بيانات الصف ${row.line} تطابق موظفين مختلفين حسب الكود والهاتف.`)
+            return
+          }
+          const existing = codeMatch ?? phoneMatch
+          if (!existing) continue
+          if (!row.emailProvided) {
+            const savedCode = String(existing.data().employeeCode ?? '').trim()
+            if (!codeMatch && savedCode && savedCode !== row.employeeCode) {
+              onNotice(`الكود الوظيفي في الصف ${row.line} لا يطابق الموظف المرتبط بالهاتف. صحح الكود قبل الاعتماد.`)
+              return
+            }
+            const savedPhone = String(existing.data().phoneLookup ?? normalizePhone(String(existing.data().phone ?? '')))
+            if (row.phone && savedPhone && savedPhone !== normalizePhone(row.phone)) {
+              onNotice(`الهاتف في الصف ${row.line} لا يطابق الموظف المرتبط بالكود ${row.employeeCode}.`)
+              return
+            }
+            row.email = existing.id
+          } else if (existing.id !== row.email) {
+            onNotice(`الكود أو الهاتف في الصف ${row.line} مرتبط بسجل آخر ${existing.id}.`)
             return
           }
         }
+      }
+      const emails = new Set<string>()
+      const duplicateEmail = rows.find((row) => {
+        if (emails.has(row.email)) return true
+        emails.add(row.email)
+        return false
+      })
+      const emailMissingAfterMatching = rows.find((row) =>
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email))
+      if (emailMissingAfterMatching) {
+        onNotice(`أدخل هاتفاً دولياً أو بريداً داخلياً في الصف ${emailMissingAfterMatching.line}، أو طابقه مع سجل قائم بالكود الوظيفي.`)
+        return
+      }
+      if (duplicateEmail) {
+        onNotice(`البريد الداخلي مكرر في الصف ${duplicateEmail.line}.`)
+        return
       }
       const period = currentSpendingPeriod()
       for (let offset = 0; offset < rows.length; offset += 25) {
@@ -598,7 +705,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
             ? { monthlySpendingLimit: row.monthlySpendingLimit ?? deleteField() } : {}),
           ...(row.providedFields.includes('currentMonthlySpent')
             ? { currentMonthlySpent: row.currentMonthlySpent ?? 0, spendingPeriod: period } : {}),
-          active: row.active ?? true,
+          ...(row.active !== undefined ? { active: row.active } : { active: true }),
           approvedBy: user.uid,
           updatedAt: serverTimestamp(),
         }, { merge: true }))
@@ -960,19 +1067,37 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
             <label className="roster-file-button"><Upload size={15} /> اختيار ملف CSV<input type="file" accept=".csv,text/csv" disabled={working} onChange={(event) => { void readRosterFile(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = '' }} /></label>
             {rosterFileName && <span className="roster-file-name" dir="auto">{rosterFileName}</span>}
           </div>
-          <small className="employee-bulk-help">الأعمدة المطلوبة: <b dir="ltr">email, employeeCode</b>. البريد مفتاح داخلي لسجل الموارد البشرية فقط، ولا يحتاج الموظف إلى استخدامه لتسجيل الدخول. الأعمدة الاختيارية: <b dir="ltr">company, monthlySpendingLimit, currentMonthlySpent</b>. الخانة الفارغة للشركة أو السقف تمسح قيمتها؛ والإنفاق الفارغ يصفره. الأعمدة غير الموجودة لا تغيّر بياناتها. لا تضف كلمات مرور.</small>
+          <small className="employee-bulk-help">الأعمدة المطلوبة: <b dir="ltr">employeeCode</b> و<b dir="ltr">name</b>، مع الهاتف أو البريد الداخلي. البريد اختياري؛ عند تركه فارغاً يُنشأ معرّف داخلي من الهاتف، أو يُطابق السجل القائم بالكود الوظيفي. تُصحح أسماء الشركات والفروع والمحافظات تلقائياً عند وجود تطابق فريد قريب، ويمكن تعديل كل صف قبل الاعتماد. الأعمدة الاختيارية: <b dir="ltr">company, monthlySpendingLimit, currentMonthlySpent</b>. لا تضف كلمات مرور.</small>
           {rosterPreview && <div className="roster-preview">
-            <div className="roster-preview-summary"><strong>معاينة {rosterFileName}</strong><span>{rosterPreview.rows.length} سجل صالح</span><span className={rosterPreview.issues.length ? 'roster-invalid-count' : ''}>{rosterPreview.issues.length} مشكلة</span></div>
+            <div className="roster-preview-summary"><strong>معاينة وتعديل {rosterFileName}</strong><span>{rosterPreview.rows.length} سجل</span><span className={rosterPreview.issues.length || rosterPreview.rows.some((row) => rosterImportRowIssues(row, organizationOptions).length) ? 'roster-invalid-count' : ''}>{rosterPreview.issues.length + rosterPreview.rows.reduce((total, row) => total + rosterImportRowIssues(row, organizationOptions).length, 0)} مشكلة قابلة للمراجعة</span><span>{rosterPreview.rows.reduce((total, row) => total + row.corrections.length, 0)} تصحيح تلقائي</span></div>
             {rosterPreview.issues.length > 0 && <div className="roster-import-issues" role="alert">{rosterPreview.issues.slice(0, 6).map((item) => <small key={item}>{item}</small>)}{rosterPreview.issues.length > 6 && <small>و{rosterPreview.issues.length - 6} مشكلات أخرى. صحّح الملف ثم أعد اختياره.</small>}</div>}
-            {rosterPreview.rows.length > 0 && <div className="roster-preview-list">{rosterPreview.rows.slice(0, 4).map((row) => <div key={`${row.email}-${row.line}`}><span dir="ltr">{row.email}</span><span>الكود: {row.employeeCode}</span></div>)}</div>}
-            <button className="admin-add-button roster-import-button" type="button" disabled={working || !rosterPreview.rows.length || Boolean(rosterPreview.issues.length)} onClick={() => void importEmployees()}>
+            {rosterPreview.rows.length > 0 && <div className="roster-import-table-wrap"><table className="roster-import-table"><thead><tr><th>الاسم</th><th>البريد الداخلي (اختياري)</th><th>الكود الوظيفي</th><th>الشركة</th><th>الفرع</th><th>المحافظة</th><th>العنوان</th><th>الهاتف</th><th>واتساب</th><th>السقف الشهري</th><th>الإنفاق الحالي</th><th>الحالة</th><th>المراجعة</th><th>إزالة</th></tr></thead><tbody>{rosterPreview.rows.map((row, index) => {
+              const rowIssues = rosterImportRowIssues(row, organizationOptions)
+              return <tr key={`${row.email}-${row.line}`}>
+              <td><input aria-label={`اسم الموظف في الصف ${row.line}`} value={row.name ?? ''} onChange={(event) => updateRosterRow(index, { name: event.target.value })} /></td>
+              <td><input aria-label={`البريد الداخلي في الصف ${row.line}`} dir="ltr" value={row.email} onChange={(event) => updateRosterRow(index, { email: event.target.value.trim().toLowerCase() })} /></td>
+              <td><input aria-label={`الكود الوظيفي في الصف ${row.line}`} value={row.employeeCode} onChange={(event) => updateRosterRow(index, { employeeCode: event.target.value })} /></td>
+              <td><input aria-label={`الشركة في الصف ${row.line}`} value={row.company ?? ''} list="natco-company-options" onChange={(event) => updateRosterRow(index, { company: event.target.value })} /></td>
+              <td><input aria-label={`الفرع في الصف ${row.line}`} value={row.branch ?? ''} onChange={(event) => updateRosterRow(index, { branch: event.target.value })} /></td>
+              <td><input aria-label={`المحافظة في الصف ${row.line}`} value={row.province ?? ''} onChange={(event) => updateRosterRow(index, { province: event.target.value })} /></td>
+              <td><input aria-label={`العنوان في الصف ${row.line}`} value={row.address ?? ''} onChange={(event) => updateRosterRow(index, { address: event.target.value })} /></td>
+              <td><input aria-label={`الهاتف في الصف ${row.line}`} dir="ltr" value={row.phone ?? ''} onChange={(event) => updateRosterRow(index, { phone: event.target.value })} /></td>
+              <td><input aria-label={`واتساب في الصف ${row.line}`} dir="ltr" value={row.whatsapp ?? ''} onChange={(event) => updateRosterRow(index, { whatsapp: event.target.value })} /></td>
+              <td><input aria-label={`السقف الشهري في الصف ${row.line}`} inputMode="decimal" value={row.monthlySpendingLimitRaw ?? ''} onChange={(event) => updateRosterRow(index, { monthlySpendingLimitRaw: event.target.value })} /></td>
+              <td><input aria-label={`الإنفاق الحالي في الصف ${row.line}`} inputMode="decimal" value={row.currentMonthlySpentRaw ?? ''} onChange={(event) => updateRosterRow(index, { currentMonthlySpentRaw: event.target.value })} /></td>
+              <td><select aria-label={`حالة الحساب في الصف ${row.line}`} value={row.activeRaw ?? ''} onChange={(event) => updateRosterRow(index, { activeRaw: event.target.value })}><option value="">نشط افتراضياً</option><option value="active">نشط</option><option value="inactive">موقوف</option></select></td>
+              <td>{rowIssues.map((message) => <small className="roster-row-problem" key={message}>{message}</small>)}{row.corrections.map((correction) => <small className="roster-row-corrections" key={correction}>{correction}</small>)}{!rowIssues.length && !row.corrections.length && <small>صف {row.line} جاهز</small>}</td>
+              <td><button type="button" className="admin-delete-order" aria-label={`إزالة الصف ${row.line}`} onClick={() => removeRosterRow(index)}><Trash2 size={14} /></button></td>
+            </tr>})}</tbody></table><datalist id="natco-company-options">{organizationOptions.companies.map((company) => <option key={company.name} value={company.name} />)}</datalist></div>}
+            <button className="admin-add-button roster-import-button" type="button" disabled={working || !rosterPreview.rows.length || Boolean(rosterPreview.issues.length) || Boolean(rosterPreview.rows.some((row) => rosterImportRowIssues(row, organizationOptions).length))} onClick={() => void importEmployees()}>
               {working ? <><LoaderCircle size={14} /> جارٍ الاعتماد ({importedRows}/{rosterPreview.rows.length})</> : <><Users size={14} /> اعتماد {rosterPreview.rows.length} موظف</>}
             </button>
           </div>}
         </div>
         <div className="employee-single-heading"><strong>اعتماد موظف واحد</strong><small>استخدم هذا النموذج لإضافة موظف منفرد أو تعديل سجله.</small></div>
         <form className="employee-approval-form" onSubmit={(event) => void saveEmployee(event)}>
-          <label className="field"><span>البريد الداخلي لسجل الموظف</span><input required type="email" dir="ltr" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="employee@company.com" /><small>يُستخدم لربط سجل الموارد البشرية والطلبات فقط؛ الموظف يسجل الدخول برقم الهاتف وكلمة المرور.</small></label>
+          <label className="field"><span>اسم الموظف</span><input required value={employeeName} onChange={(event) => setEmployeeName(event.target.value)} placeholder="الاسم الكامل" /></label>
+          <label className="field"><span>البريد الداخلي (اختياري)</span><input type="email" dir="ltr" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="يُنشأ تلقائياً من الهاتف عند تركه فارغاً" /></label>
           <label className="field"><span>الكود الوظيفي</span><input required value={employeeCode} onChange={(event) => setEmployeeCode(event.target.value)} placeholder="مثال: 10482" /></label>
           <label className="field"><span>رقم الهاتف مع رمز الدولة</span><input required type="tel" dir="ltr" value={employeePhone} onChange={(event) => setEmployeePhone(event.target.value)} placeholder="+967 7XX XXX XXX" /></label>
           <button className="admin-add-button" disabled={working}><Plus size={15} /> اعتماد الموظف</button>
