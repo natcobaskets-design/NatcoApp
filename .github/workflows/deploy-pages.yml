@@ -28,6 +28,10 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Verify Web Push configuration
+        run: test -n "$VITE_FIREBASE_VAPID_KEY"
+        env:
+          VITE_FIREBASE_VAPID_KEY: ${{ secrets.VITE_FIREBASE_VAPID_KEY }}
       - name: Build application
         run: npm run build
         env:
@@ -35,7 +39,7 @@ jobs:
           VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
           VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
           VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
-          VITE_FIREBASE_VAPID_KEY: ${{ secrets.VITE_FIREBASE_VAPID_KEY || 'BJpG21DJdFIEiA6_0bxMo22k4Vml50DHbcIAxB0iHMmjvkc090ac4CqLRYtdExA50-xb3WD-h_E8i9X7je-PCE0' }}
+          VITE_FIREBASE_VAPID_KEY: ${{ secrets.VITE_FIREBASE_VAPID_KEY }}
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
       - name: Upload Pages artifact
