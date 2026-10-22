@@ -409,6 +409,7 @@ service cloud.firestore {
         && profile.get('currentMonthlySpent', 0) == oldSpent
         && profile.get('spendingPeriod', '') == roster.get('spendingPeriod', '')
         && (!roster.keys().hasAny(['monthlySpendingLimit'])
+          || roster.monthlySpendingLimit == 0
           || (totalAmount is number
             && totalAmount >= 0
             && totalAmount <= roster.monthlySpendingLimit - oldSpent))
@@ -475,6 +476,7 @@ service cloud.firestore {
         && order.excluded is list
         && order.excluded.size() <= 50
         && (!roster.keys().hasAny(['monthlySpendingLimit'])
+          || roster.monthlySpendingLimit == 0
           || (totalAmount is number
             && totalAmount >= 0
             && totalAmount <= roster.monthlySpendingLimit
@@ -590,27 +592,36 @@ service cloud.firestore {
         && request.resource.data.updatedAt == request.time;
       allow create: if isAdmin()
         && request.resource.data.keys().hasOnly([
-          'orderId', 'uid', 'status', 'eventStatus', 'createdAt', 'updatedAt'
+          'orderId', 'uid', 'email', 'status', 'eventStatus', 'createdAt', 'updatedAt'
         ])
         && request.resource.data.orderId == orderId
         && request.resource.data.uid is string
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 254
         && request.resource.data.status == 'pending'
         && request.resource.data.eventStatus == 'deleted'
         && request.resource.data.createdAt == request.time
         && request.resource.data.updatedAt == request.time;
       allow update: if (isAdmin()
         && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['status', 'eventStatus', 'updatedAt'])
+          .hasOnly(['status', 'eventStatus', 'email', 'updatedAt'])
         && request.resource.data.status == 'pending'
-        && request.resource.data.eventStatus == getAfter(
-          /databases/$(database)/documents/orders/$(orderId)
-        ).data.status
-        && request.resource.data.uid == getAfter(
-          /databases/$(database)/documents/orders/$(orderId)
-        ).data.uid
-        && getAfter(
-          /databases/$(database)/documents/orders/$(orderId)
-        ).data.updatedAt == request.time
+        && (request.resource.data.eventStatus == 'deleted'
+          ? !existsAfter(
+              /databases/$(database)/documents/orders/$(orderId)
+            )
+            && request.resource.data.uid == resource.data.uid
+            && request.resource.data.email is string
+            && request.resource.data.email.size() <= 254
+          : request.resource.data.eventStatus == getAfter(
+              /databases/$(database)/documents/orders/$(orderId)
+            ).data.status
+            && request.resource.data.uid == getAfter(
+              /databases/$(database)/documents/orders/$(orderId)
+            ).data.uid
+            && getAfter(
+              /databases/$(database)/documents/orders/$(orderId)
+            ).data.updatedAt == request.time)
         && request.resource.data.updatedAt == request.time)
         || (signedIn()
           && resource.data.uid == request.auth.uid

@@ -667,7 +667,7 @@ function App() {
   const hasUnpricedItems = pricedItems.some((item) => item.price === null)
   const currentMonthlySpent = profile.currentMonthlySpent ?? 0
   const editingOrderAllowance = editingOrderId ? activeOrder?.totalAmount ?? 0 : 0
-  const remainingMonthlyLimit = typeof profile.monthlySpendingLimit === 'number'
+  const remainingMonthlyLimit = typeof profile.monthlySpendingLimit === 'number' && profile.monthlySpendingLimit > 0
     ? Math.max(0, profile.monthlySpendingLimit - currentMonthlySpent + editingOrderAllowance)
     : null
   const exceedsMonthlyLimit = remainingMonthlyLimit !== null && totalAmount > remainingMonthlyLimit
@@ -1022,12 +1022,12 @@ function App() {
       const rosterPeriod = typeof rosterSnapshot.data().spendingPeriod === 'string'
         ? rosterSnapshot.data().spendingPeriod
         : ''
-      if (typeof freshProfile.monthlySpendingLimit === 'number' &&
+      if (typeof freshProfile.monthlySpendingLimit === 'number' && freshProfile.monthlySpendingLimit > 0 &&
         rosterPeriod !== currentPeriod && (Boolean(rosterPeriod) || rosterSpent > 0)) {
         setNotice('انتهت فترة الإنفاق المسجلة في سجل الموظف. يرجى التواصل مع المشرف لتحديث رصيد الشهر قبل تأكيد الطلب.')
         return
       }
-      if (typeof freshProfile.monthlySpendingLimit === 'number' &&
+      if (typeof freshProfile.monthlySpendingLimit === 'number' && freshProfile.monthlySpendingLimit > 0 &&
         totalAmount > freshProfile.monthlySpendingLimit - rosterSpent + previousAmount) {
         setNotice('إجمالي الطلب يتجاوز المتبقي من سقفك الشهري. راجع الأصناف أو تواصل مع مسؤول الموارد البشرية.')
         return

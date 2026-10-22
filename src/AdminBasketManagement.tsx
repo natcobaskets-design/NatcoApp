@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore'
-import { Edit3, Save, Trash2, X } from 'lucide-react'
+import { Edit3, Plus, Save, Trash2, X } from 'lucide-react'
 import { defaultBasketDefinitions, defaultBasketSelectionSettings, parseBasketDefinition, type BasketDefinition, type CatalogProduct } from './domain'
 import { firebaseErrorMessage, firestore } from './firebase'
 
@@ -88,6 +88,11 @@ export function AdminBasketManagement({ products, onNotice, userId }: Props) {
     setEditingId('')
   }
 
+  function startNewBasket() {
+    resetDraft()
+    document.getElementById('basket-definition-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   async function saveBasket(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!firestore) return
@@ -172,12 +177,20 @@ export function AdminBasketManagement({ products, onNotice, userId }: Props) {
   }
 
   return <section className="admin-panel basket-management">
-    <div className="admin-panel-heading"><div><h3>إدارة السلال الغذائية</h3><p>حدد أسماء السلال وأنواعها وحدود الاختيار والأصناف التي تظهر داخل كل سلة.</p></div></div>
+    <div className="admin-panel-heading"><div><h3>إدارة السلال الغذائية</h3><p>اعرض السلال المتاحة وعدّلها، أو أضف سلة جديدة وحدد أصنافها وحدود الاختيار.</p></div></div>
     <form className="basket-limit-form" onSubmit={(event) => void saveGlobalMaximum(event)}>
       <label className="field"><span>الحد الإجمالي للسلال لكل موظف</span><input type="number" min="1" max="2" value={maxTotal} onChange={(event) => setMaxTotal(Number(event.target.value))} /></label>
       <button className="admin-add-button" disabled={working}><Save size={14} /> حفظ الحد الإجمالي</button>
     </form>
-    <form className="basket-definition-form" onSubmit={(event) => void saveBasket(event)}>
+    <div className="basket-definition-list">
+      <div className="admin-panel-heading"><div><h3>السلال المعرفة حالياً ({baskets.length})</h3><p>اختر «تعديل» لتغيير الاسم أو الأصناف أو حالة إظهار السلة للموظفين.</p></div><button type="button" className="admin-add-button" disabled={working} onClick={startNewBasket}><Plus size={14} /> إضافة سلة جديدة</button></div>
+      {baskets.map((basket) => <article className="basket-definition-card" key={basket.id}>
+        <div><strong>{basket.name}</strong><span>{basket.kind === 'essential' ? 'أساسية' : basket.kind === 'family' ? 'عائلية' : 'مخصصة'} · حد الموظف {basket.maxPerEmployee} · {basket.active ? 'نشطة' : 'مخفاة'}</span>
+          <small>{basket.productIds.map((id) => products.find((product) => product.id === id)?.name ?? id).join('، ') || 'لا توجد أصناف مرتبطة'}</small></div>
+        <div><button type="button" disabled={working} onClick={() => editBasket(basket)} aria-label={`تعديل ${basket.name}`}><Edit3 size={15} /></button><button type="button" disabled={working} onClick={() => void removeBasket(basket)} aria-label={`حذف ${basket.name}`}><Trash2 size={15} /></button></div>
+      </article>)}
+    </div>
+    <form id="basket-definition-form" className="basket-definition-form" onSubmit={(event) => void saveBasket(event)}>
       <div className="employee-single-heading"><strong>{editingId ? 'تعديل السلة' : 'إضافة سلة'}</strong></div>
       <div className="basket-definition-fields">
         <label className="field"><span>اسم السلة</span><input required maxLength={80} value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
@@ -196,10 +209,5 @@ export function AdminBasketManagement({ products, onNotice, userId }: Props) {
       <label className="basket-active-toggle"><input type="checkbox" checked={draft.active} onChange={(event) => setDraft((current) => ({ ...current, active: event.target.checked }))} /> إظهار السلة للموظفين</label>
       <div className="basket-definition-actions"><button className="admin-add-button" disabled={working}><Save size={14} /> {editingId ? 'حفظ التعديلات' : 'إضافة السلة'}</button>{editingId && <button type="button" className="admin-export-button" onClick={resetDraft}><X size={14} /> إلغاء</button>}</div>
     </form>
-    <div className="basket-definition-list">{baskets.map((basket) => <article className="basket-definition-card" key={basket.id}>
-      <div><strong>{basket.name}</strong><span>{basket.kind === 'essential' ? 'أساسية' : basket.kind === 'family' ? 'عائلية' : 'مخصصة'} · حد الموظف {basket.maxPerEmployee} · {basket.active ? 'نشطة' : 'مخفاة'}</span>
-        <small>{basket.productIds.map((id) => products.find((product) => product.id === id)?.name ?? id).join('، ') || 'لا توجد أصناف مرتبطة'}</small></div>
-      <div><button type="button" disabled={working} onClick={() => editBasket(basket)} aria-label={`تعديل ${basket.name}`}><Edit3 size={15} /></button><button type="button" disabled={working} onClick={() => void removeBasket(basket)} aria-label={`حذف ${basket.name}`}><Trash2 size={15} /></button></div>
-    </article>)}</div>
   </section>
 }

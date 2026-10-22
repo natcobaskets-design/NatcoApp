@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { toBlob } from 'html-to-image'
 import type { User } from 'firebase/auth'
 import {
   Bell, Check, ChevronDown, CircleHelp, ClipboardList, Download, Gift, Home, LogOut, Package,
@@ -222,6 +223,14 @@ export function AppLayout(props: AppLayoutProps) {
   }, [])
 
   useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+      document.querySelector<HTMLElement>('.main-content')?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [screen])
+
+  useEffect(() => {
     if (!authUser || !props.notificationsLoaded) {
       seenNotificationsRef.current = null
       return
@@ -250,9 +259,11 @@ export function AppLayout(props: AppLayoutProps) {
     if (document.hidden && notificationPermission === 'granted' && typeof Notification !== 'undefined') {
       try {
         new Notification(showAdminNotifications ? 'إشعار جديد من ناتكو' : 'تحديث جديد لطلبك', {
-          body: newestNotification.status === 'received'
-            ? 'تم استلام طلب جديد.'
-            : `حالة الطلب: ${orderStatusLabels[newestNotification.status]}`,
+          body: newestNotification.status === 'deleted'
+            ? 'تم حذف الطلب من النظام.'
+            : newestNotification.status === 'received'
+              ? 'تم استلام طلب جديد.'
+              : `حالة الطلب: ${orderStatusLabels[newestNotification.status]}`,
           icon: `${import.meta.env.BASE_URL}natco-logo.jpg`,
           tag: key,
         })
@@ -357,6 +368,12 @@ export function AppLayout(props: AppLayoutProps) {
       setFocusedOrderId(notification.orderId)
       setNotificationNavigationRevision((revision) => revision + 1)
       setScreen('admin')
+      return
+    }
+
+    if (notification.status === 'deleted') {
+      setScreen('orders')
+      setNotice(`تم حذف الطلب NATCO-${notification.orderId.slice(-6).toUpperCase()} من النظام بواسطة الإدارة.`)
       return
     }
 
@@ -474,9 +491,11 @@ export function AppLayout(props: AppLayoutProps) {
                   <span className="notification-item-copy">
                     <strong>{showAdminNotifications ? 'إشعار جديد من الموظفين' : 'لديك تحديث جديد'}</strong>
                     <small>
-                      {incomingNotification.notification.status === 'received'
-                        ? showAdminNotifications ? 'تم استلام طلب جديد أو تعديل.' : 'تم استلام طلبك بنجاح.'
-                        : `حالة الطلب: ${orderStatusLabels[incomingNotification.notification.status]}`}
+                      {incomingNotification.notification.status === 'deleted'
+                        ? showAdminNotifications ? 'تم حذف الطلب.' : 'تم حذف طلبك من النظام بواسطة الإدارة.'
+                        : incomingNotification.notification.status === 'received'
+                          ? showAdminNotifications ? 'تم استلام طلب جديد أو تعديل.' : 'تم استلام طلبك بنجاح.'
+                          : `حالة الطلب: ${orderStatusLabels[incomingNotification.notification.status]}`}
                     </small>
                   </span>
                 </button>
@@ -526,12 +545,15 @@ export function AppLayout(props: AppLayoutProps) {
                     const order = employeeOrders.find((item) => item.id === notification.orderId)
                     const reference = order?.reference ?? `NATCO-${notification.orderId.slice(-6).toUpperCase()}`
                     const isReceived = notification.status === 'received'
-                    const title = showAdminNotifications
-                      ? isReceived ? 'طلب جديد أو تعديل من الموظف' : 'تحديث حالة طلب'
-                      : isReceived ? 'تم استلام طلبك' : 'تحديث حالة طلبك'
+                    const isDeleted = notification.status === 'deleted'
+                    const title = isDeleted
+                      ? showAdminNotifications ? 'تم حذف الطلب' : 'تم حذف طلبك'
+                      : showAdminNotifications
+                        ? isReceived ? 'طلب جديد أو تعديل من الموظف' : 'تحديث حالة طلب'
+                        : isReceived ? 'تم استلام طلبك' : 'تحديث حالة طلبك'
                     const message = showAdminNotifications
-                      ? `${reference} · ${isReceived ? 'بانتظار المراجعة' : orderStatusLabels[notification.status]}`
-                      : `${reference} · ${orderStatusLabels[notification.status]}`
+                      ? `${reference} · ${isDeleted ? 'حُذف من النظام' : isReceived ? 'بانتظار المراجعة' : orderStatusLabels[notification.status]}`
+                      : `${reference} · ${isDeleted ? 'حُذف بواسطة الإدارة' : orderStatusLabels[notification.status]}`
                     return <div className="notification-row" key={notificationKey(notification)}>
                       <button
                         type="button"
@@ -643,7 +665,12 @@ export function AppLayout(props: AppLayoutProps) {
           {screen === 'customize' && <BasketCustomization {...props.customizationProps} />}
           {(screen === 'receipt' || screen === 'orders') && <ReceiptView
             {...props.receiptProps}
-            onShare={() => shareOrderReceipt(props.receiptProps.activeOrder, props.receiptProps.products)}
+            onShare={() => void shareOrderReceipt(
+              props.receiptProps.activeOrder,
+              props.receiptProps.products,
+              props.supportPhone,
+              props.setNotice,
+            )}
             showHistory={screen === 'orders'}
           />}
           {screen === 'admin' && isAdmin && authUser && <AdminConsole
@@ -668,12 +695,63 @@ export function AppLayout(props: AppLayoutProps) {
   </div>
 }
 
-function shareOrderReceipt(activeOrder: Order | null, products: CatalogProduct[]) {
+async function shareOrderReceipt(
+  activeOrder: Order | null,
+  products: CatalogProduct[],
+  supportPhone: string,
+  setNotice: (notice: string) => void,
+) {
   if (!activeOrder) return
   const itemSummary = Object.entries(activeOrder.items)
     .filter(([, amount]) => amount > 0)
     .map(([id, amount]) => `${activeOrder.itemDetails[id]?.name ?? products.find((product) => product.id === id)?.name ?? 'صنف'} × ${amount}`)
     .join('، ')
-  const message = `إيصال استلام ناتكو الاستهلاكية\nرقم الطلب: ${activeOrder.reference}\nالموظف: ${activeOrder.profile.name}\nالفرع: ${activeOrder.profile.branch}\nالأصناف: ${itemSummary}\nالحالة: ${orderStatusLabels[activeOrder.status]}`
-  window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer')
+  const supportDigits = supportPhone.replace(/\D/g, '')
+  const supportLink = supportDigits ? `https://wa.me/${supportDigits}` : 'غير متوفر'
+  const message = [
+    'إيصال استلام ناتكو الاستهلاكية',
+    `رقم الطلب: ${activeOrder.reference}`,
+    `الموظف: ${activeOrder.profile.name}`,
+    `الكود الوظيفي: ${activeOrder.profile.employeeCode}`,
+    `الشركة: ${activeOrder.profile.company}`,
+    `الفرع: ${activeOrder.profile.branch}`,
+    `مكان الاستلام: ${activeOrder.pickupBranch || activeOrder.profile.branch}`,
+    `الأصناف: ${itemSummary || 'لا توجد أصناف'}`,
+    `الإجمالي: ${typeof activeOrder.totalAmount === 'number' ? `${new Intl.NumberFormat('ar-YE').format(activeOrder.totalAmount)} ر.ي` : 'غير متوفر'}`,
+    `الحالة: ${orderStatusLabels[activeOrder.status]}`,
+    `مساعدة واتساب: ${supportLink}`,
+  ].join('\n')
+
+  try {
+    const receipt = document.querySelector<HTMLElement>('.receipt-card')
+    if (!receipt) throw new Error('تعذر العثور على بطاقة الإيصال.')
+    const image = await toBlob(receipt, {
+      pixelRatio: 2,
+      backgroundColor: '#fff',
+      cacheBust: true,
+    })
+    if (!image) throw new Error('تعذر إنشاء صورة الإيصال.')
+    const file = new File([image], `${activeOrder.reference}.png`, { type: 'image/png' })
+    if (navigator.canShare?.({ files: [file] }) && navigator.share) {
+      await navigator.share({
+        files: [file],
+        title: `إيصال ${activeOrder.reference}`,
+        text: message,
+      })
+      return
+    }
+    const url = URL.createObjectURL(image)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = file.name
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer')
+    setNotice('تم تنزيل صورة الإيصال متضمنة رمز QR. أرفق الصورة في محادثة واتساب المفتوحة.')
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') return
+    console.error('Unable to share the receipt image.', error)
+    window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer')
+    setNotice('تعذر إنشاء صورة الإيصال؛ أُعيد فتح واتساب بالنص ورقم الطلب، ويمكنك المحاولة مجدداً.')
+  }
 }

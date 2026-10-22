@@ -178,7 +178,9 @@ export function EmployeeProfileForm({
       {assignedCompany && <div className="employee-spending-note field-wide">
         <strong>الشركة المعتمدة: {assignedCompany}</strong>
         <span>{typeof profile.monthlySpendingLimit === 'number'
-          ? `السقف الشهري ${formatYER(profile.monthlySpendingLimit)} — الإنفاق المسجل ${formatYER(profile.currentMonthlySpent ?? 0)}`
+          ? profile.monthlySpendingLimit > 0
+            ? `السقف الشهري ${formatYER(profile.monthlySpendingLimit)} — الإنفاق المسجل ${formatYER(profile.currentMonthlySpent ?? 0)}`
+            : `السقف الشهري غير محدود — الإنفاق المسجل ${formatYER(profile.currentMonthlySpent ?? 0)}`
           : 'لم يحدد سقف شهري لهذا الحساب بعد.'}</span>
         <small>تغيير الشركة أو السقف يتم من لوحة المشرف.</small>
       </div>}
@@ -349,7 +351,7 @@ export function BasketCustomization(props: CustomizationProps) {
         </select><ChevronDown size={17} /></span>
       </label>
       <div className="checkout-total"><span>الإجمالي التقديري بسعر الوكيل</span><strong>{formatYER(props.totalAmount)}</strong></div>
-      {props.monthlySpendingLimit !== undefined && <div className="monthly-limit-summary">
+      {typeof props.monthlySpendingLimit === 'number' && props.monthlySpendingLimit > 0 && <div className="monthly-limit-summary">
         <span>السقف الشهري: {formatYER(props.monthlySpendingLimit)}</span>
         <span>المسجل حالياً: {formatYER(props.currentMonthlySpent)}</span>
         <strong>المتبقي: {formatYER(props.remainingMonthlyLimit ?? 0)}</strong>

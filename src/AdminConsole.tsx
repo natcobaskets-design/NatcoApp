@@ -367,12 +367,14 @@ export function AdminConsole({ user, focusOrderId, onNotice, onOrganizationOptio
           transaction.set(notificationRef, {
             status: 'pending',
             eventStatus: 'deleted',
+            email: liveOrder.profile.email,
             updatedAt: serverTimestamp(),
           }, { merge: true })
         } else {
           transaction.set(notificationRef, {
             orderId: liveOrder.id,
             uid: liveOrder.uid,
+            email: liveOrder.profile.email,
             status: 'pending',
             eventStatus: 'deleted',
             createdAt: serverTimestamp(),

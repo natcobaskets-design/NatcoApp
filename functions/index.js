@@ -153,9 +153,11 @@ exports.sendNatcoOrderPushNotifications = onDocumentWritten(
       const adminUids = new Set(adminSnapshot.docs.map((item) => item.id))
       const recipientUids = new Set(adminUids)
       const order = orderSnapshot.exists ? orderSnapshot.data() : null
-      if (order?.uid === notification.uid && typeof order.email === 'string') {
+      const employeeEmail = order?.email || order?.profile?.email || notification.email
+      if ((order?.uid === notification.uid || notification.eventStatus === 'deleted') &&
+        typeof employeeEmail === 'string') {
         const roster = await database.collection('employee_roster')
-          .doc(order.email.toLowerCase()).get()
+          .doc(employeeEmail.toLowerCase()).get()
         if (roster.exists && roster.data().active === true) recipientUids.add(notification.uid)
       }
       let sent = 0
