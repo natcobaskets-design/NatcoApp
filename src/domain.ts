@@ -107,6 +107,7 @@ export type Order = {
   totalAmount?: number
   currency?: string
   pickupBranch?: string
+  updatedAt?: string
 }
 
 export const companies = [
@@ -296,6 +297,9 @@ export function parseOrder(id: string, data: Record<string, unknown>): Order | n
   const createdAt = data.createdAt instanceof Timestamp
     ? data.createdAt.toDate().toISOString()
     : stringField(data.createdAt)
+  const updatedAt = data.updatedAt instanceof Timestamp
+    ? data.updatedAt.toDate().toISOString()
+    : stringField(data.updatedAt)
   const basketCounts = Object.fromEntries(
     Object.entries(baskets).filter((entry): entry is [string, number] => Number.isInteger(entry[1]) && Number(entry[1]) >= 0),
   )
@@ -319,5 +323,6 @@ export function parseOrder(id: string, data: Record<string, unknown>): Order | n
       ? { totalAmount: data.totalAmount } : {}),
     ...(typeof data.currency === 'string' ? { currency: data.currency } : {}),
     ...(typeof data.pickupBranch === 'string' ? { pickupBranch: data.pickupBranch } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
   }
 }

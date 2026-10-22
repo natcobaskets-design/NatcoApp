@@ -34,46 +34,73 @@ export function encodeCsv(headers: string[], rows: Array<Array<string | number>>
     .join('\r\n')}\r\n`
 }
 
-export function ordersToCsv(orders: Order[], products: CatalogProduct[]): string {
+const orderSheetHeaders = [
+  'معرف الطلب', 'رقم الطلب', 'تاريخ الطلب', 'الحالة', 'اسم الموظف',
+  'الكود الوظيفي', 'البريد الإلكتروني', 'الشركة', 'الفرع', 'الهاتف',
+  'واتساب', 'العنوان', 'فرع الاستلام', 'السلة الأساسية', 'السلة العائلية',
+  'الأصناف والكميات', 'الأصناف المستبعدة', 'الإجمالي (ر.ي)', 'العملة',
+  'نوع الحركة', 'عدد التعديلات', 'آخر تحديث',
+]
+
+function orderSheetStatus(status: Order['status']): string {
+  const sheetLabels: Record<Order['status'], string> = {
+    received: 'وصل الطلب (RECEIVED)',
+    preparing: 'قيد التجهيز (PREPARING)',
+    ready: 'جاهز للصرف (READY)',
+    fulfilled: 'تم التسليم (FULFILLED)',
+    cancelled: 'ملغي (CANCELLED)',
+    deleted: 'محذوف (DELETED)',
+  }
+  return sheetLabels[status]
+}
+
+function orderSheetRows(orders: Order[], products: CatalogProduct[]): Array<Array<string | number>> {
   const productNames = new Map(products.map((product) => [product.id, product.name]))
-  const headers = [
-    'رقم الطلب', 'تاريخ الطلب', 'الحالة', 'البريد الإلكتروني', 'الكود الوظيفي',
-    'اسم الموظف', 'الشركة', 'الفرع', 'الهاتف', 'واتساب', 'العنوان',
-    'السلة الأساسية', 'السلة العائلية', 'فرع الاستلام', 'إجمالي الطلب (ر.ي)', 'الأصناف والكميات', 'الأصناف المستبعدة',
-  ]
-  const rows = orders.map((order) => [
+  return orders.map((order) => [
+    order.id,
     order.reference,
     order.createdAt,
-    orderStatusLabels[order.status],
-    order.profile.email,
-    order.profile.employeeCode,
+    orderSheetStatus(order.status),
     order.profile.name,
+    order.profile.employeeCode,
+    order.profile.email,
     order.profile.company,
     order.profile.branch,
     order.profile.phone,
     order.profile.whatsapp,
     order.profile.address,
+    order.pickupBranch ?? order.profile.branch,
     order.baskets.essential ?? 0,
     order.baskets.family ?? 0,
-    order.pickupBranch ?? order.profile.branch,
-    order.totalAmount ?? '',
     Object.entries(order.items)
       .filter(([, quantity]) => quantity > 0)
       .map(([id, quantity]) => `${order.itemDetails[id]?.name ?? productNames.get(id) ?? id} × ${quantity}`)
       .join(' | '),
     order.excluded.map((id) => order.itemDetails[id]?.name ?? productNames.get(id) ?? id).join(' | '),
+    order.totalAmount ?? '',
+    order.currency ?? 'YER',
+    order.editCount
+      ? 'تم تعديل الطلب'
+      : order.updatedAt && new Date(order.updatedAt).getTime() > new Date(order.createdAt).getTime() + 1000
+        ? 'تم تحديث الحالة'
+        : 'تم إنشاء الطلب',
+    order.editCount ?? 0,
+    order.updatedAt ?? order.createdAt,
   ])
-  return encodeCsv(headers, rows)
 }
 
-export function sapCompletedOrdersToCsv(orders: Order[], products: CatalogProduct[]): string {
+export function ordersToCsv(orders: Order[], products: CatalogProduct[]): string {
+  return encodeCsv(orderSheetHeaders, orderSheetRows(orders, products))
+}
+
+export function sapOrdersToCsv(orders: Order[], products: CatalogProduct[]): string {
   const productNames = new Map(products.map((product) => [product.id, product.name]))
   const headers = [
     'ExternalReference', 'DocumentDate', 'EmployeeCode', 'EmployeeName', 'Company',
     'PickupBranch', 'ProductCode', 'ProductDescription', 'Quantity', 'UnitPriceYER',
     'LineAmountYER', 'OrderTotalYER', 'Currency', 'OrderStatus',
   ]
-  const rows = orders.filter((order) => order.status === 'fulfilled').flatMap((order) =>
+  const rows = orders.filter((order) => order.status !== 'deleted').flatMap((order) =>
     Object.entries(order.items).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => {
       const detail = order.itemDetails[id]
       const unitPrice = detail?.agentPrice
@@ -91,11 +118,66 @@ export function sapCompletedOrdersToCsv(orders: Order[], products: CatalogProduc
         detail?.lineTotal ?? (typeof unitPrice === 'number' ? unitPrice * quantity : ''),
         order.totalAmount ?? '',
         order.currency ?? 'YER',
-        'FULFILLED',
+        order.status.toUpperCase(),
       ]
     }),
   )
   return encodeCsv(headers, rows)
+}
+
+export function sapProductsToCsv(products: CatalogProduct[]): string {
+  return encodeCsv(
+    ['MaterialCode', 'MaterialDescription', 'ProductDetail', 'Department', 'Category', 'BasketType', 'AgentPriceYER', 'Currency', 'IsActive'],
+    products.map((product) => [
+      product.id,
+      product.name,
+      product.detail,
+      product.department,
+      product.subcategory,
+      product.category,
+      product.agentPrice ?? '',
+      'YER',
+      product.active ? 'true' : 'false',
+    ]),
+  )
+}
+
+export function productsToCsv(products: CatalogProduct[]): string {
+  return encodeCsv(
+    ['id', 'name', 'detail', 'department', 'subcategory', 'basket', 'agentPrice', 'companyAgentPrices', 'active'],
+    products.map((product) => [
+      product.id,
+      product.name,
+      product.detail,
+      product.department,
+      product.subcategory,
+      product.category,
+      product.agentPrice ?? '',
+      JSON.stringify(product.companyAgentPrices ?? {}),
+      product.active ? 'true' : 'false',
+    ]),
+  )
+}
+
+export function sapEmployeesToCsv(employees: EmployeeEntry[]): string {
+  return encodeCsv(
+    ['EmployeeCode', 'EmployeeName', 'Email', 'Company', 'Branch', 'Province', 'Phone', 'WhatsApp', 'Address', 'Coordinates', 'MonthlySpendingLimitYER', 'CurrentMonthlySpentYER', 'AccountStatus'],
+    employees.map((employee) => [
+      employee.employeeCode,
+      employee.name ?? '',
+      employee.email,
+      employee.company ?? '',
+      employee.branch ?? '',
+      employee.province ?? '',
+      employee.phone ?? '',
+      employee.whatsapp ?? '',
+      employee.address ?? '',
+      employee.coordinates ?? '',
+      employee.monthlySpendingLimit ?? '',
+      employee.currentMonthlySpent ?? 0,
+      employee.active ? 'ACTIVE' : 'INACTIVE',
+    ]),
+  )
 }
 
 export function printOrderReport(orders: Order[], products: CatalogProduct[]): void {
@@ -117,23 +199,13 @@ export function printOrderReport(orders: Order[], products: CatalogProduct[]): v
   const escapeHtml = (value: string | number) => String(value).replace(/[&<>"']/g, (character) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[character] ?? character)
-  const productNames = new Map(products.map((product) => [product.id, product.name]))
-  const content = orders.map((order) => `
-    <article>
-      <header><h2>${escapeHtml(order.reference)} — ${escapeHtml(order.profile.name)}</h2><strong>${escapeHtml(orderStatusLabels[order.status])}</strong></header>
-      <p>الكود: ${escapeHtml(order.profile.employeeCode)} | الشركة: ${escapeHtml(order.profile.company)} | فرع الاستلام: ${escapeHtml(order.pickupBranch ?? order.profile.branch)}</p>
-      <table><thead><tr><th>كود الصنف</th><th>الصنف</th><th>الكمية</th><th>سعر الوحدة (ر.ي)</th><th>الإجمالي (ر.ي)</th></tr></thead><tbody>
-      ${Object.entries(order.items).filter(([, amount]) => amount > 0).map(([id, amount]) => {
-        const detail = order.itemDetails[id]
-        const price = detail?.agentPrice
-        const lineTotal = detail?.lineTotal ?? (typeof price === 'number' ? price * amount : '—')
-        return `<tr><td>${escapeHtml(id)}</td><td>${escapeHtml(detail?.name ?? productNames.get(id) ?? id)}</td><td>${amount}</td><td>${escapeHtml(price ?? '—')}</td><td>${escapeHtml(lineTotal)}</td></tr>`
-      }).join('')}
-      </tbody></table><strong>إجمالي الطلب: ${escapeHtml(order.totalAmount ?? '—')} ر.ي</strong>
-    </article>`).join('')
+  const rows = orderSheetRows(orders, products)
+  const content = `<div class="table-wrap"><table><thead><tr>${orderSheetHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>
+    ${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}
+    </tbody></table></div>`
   printDocument.open()
   printDocument.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>تقرير طلبات ناتكو</title><style>
-    body{font:14px Arial,sans-serif;margin:24px;color:#182344}h1{font-size:22px}article{break-inside:avoid;border:1px solid #ccd2df;padding:16px;margin:16px 0}header{display:flex;align-items:center;justify-content:space-between;gap:12px}header strong{font-size:12px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #ccd2df;padding:7px;text-align:right}th{background:#f1f3f8}@media print{body{margin:12mm}article{break-inside:avoid}}
+    body{font:11px Arial,sans-serif;margin:20px;color:#182344}h1{font-size:20px}.table-wrap{overflow:visible}table{width:100%;border-collapse:collapse;margin:12px 0;table-layout:auto}th,td{border:1px solid #ccd2df;padding:5px;text-align:right;vertical-align:top;overflow-wrap:anywhere}th{background:#f1f3f8;white-space:nowrap}@media print{body{margin:8mm}table{font-size:8px}th,td{padding:3px}}
     </style></head><body><h1>تقرير طلبات ناتكو الكامل</h1><p>عدد الطلبات: ${orders.length} · تاريخ الطباعة: ${escapeHtml(new Date().toLocaleString('ar-YE'))}</p>${content || '<p>لا توجد طلبات للطباعة.</p>'}</body></html>`)
   printDocument.close()
   let removed = false

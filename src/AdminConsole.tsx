@@ -14,8 +14,8 @@ import { AdminOrganizationSettings } from './AdminOrganizationSettings'
 import { AdminBasketManagement } from './AdminBasketManagement'
 import { firebaseErrorMessage, firebaseProjectId, firestore } from './firebase'
 import {
-  employeesToCsv, filterOrders, ordersToCsv, printOrderReport,
-  sapCompletedOrdersToCsv, shareOrDownloadCsv, type EmployeeEntry,
+  employeesToCsv, filterOrders, ordersToCsv, printOrderReport, productsToCsv,
+  sapEmployeesToCsv, sapOrdersToCsv, sapProductsToCsv, shareOrDownloadCsv, type EmployeeEntry,
 } from './adminExports'
 import {
   orderStatusLabels, parseCatalogProduct, parseOrder, productCatalogSeed,
@@ -91,21 +91,20 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     (productDepartmentFilter === 'all' || product.department === productDepartmentFilter) &&
     (productSubcategoryFilter === 'all' || product.subcategory === productSubcategoryFilter))
 
-  async function exportCompletedOrders() {
+  async function exportSapOrders() {
     setExporting(true)
     try {
-      const completed = orders.filter((order) => order.status === 'fulfilled')
-      if (!completed.length) {
-        onNotice('لا توجد طلبات مكتملة بحالة تم التسليم لتصديرها إلى SAP.')
+      if (!filteredOrders.some((order) => order.status !== 'deleted')) {
+        onNotice('لا توجد طلبات قابلة للتصدير إلى SAP.')
         return
       }
       const result = await shareOrDownloadCsv(
-        `natco-sap-fulfilled-orders-${new Date().toISOString().slice(0, 10)}.csv`,
-        sapCompletedOrdersToCsv(completed, products),
+        `natco-sap-orders-${new Date().toISOString().slice(0, 10)}.csv`,
+        sapOrdersToCsv(filteredOrders, products),
       )
-      if (result === 'downloaded') onNotice(`تم تنزيل ${completed.length} طلب مكتمل بصيغة CSV عامة لإدخاله أو مراجعته في SAP.`)
+      if (result === 'downloaded') onNotice('تم تنزيل ملف طلبات CSV عام لتهيئته أو استيراده في SAP.')
     } catch (error) {
-      console.error('Unable to export completed orders for SAP.', error)
+      console.error('Unable to export orders for SAP.', error)
       onNotice('تعذر تصدير طلبات SAP. حاول مجدداً.')
     } finally {
       setExporting(false)
@@ -114,7 +113,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
 
   function printCompletedOrderReport() {
     try {
-      printOrderReport(orders, products)
+      printOrderReport(filteredOrders, products)
     } catch (error) {
       console.error('Unable to print the complete order report.', error)
       onNotice(error instanceof Error ? error.message : 'تعذرت طباعة الطلبات المكتملة.')
@@ -698,6 +697,54 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     }
   }
 
+  async function deliverSapEmployees() {
+    setExporting(true)
+    try {
+      const result = await shareOrDownloadCsv(
+        `natco-sap-employees-${new Date().toISOString().slice(0, 10)}.csv`,
+        sapEmployeesToCsv(employees),
+      )
+      if (result === 'downloaded') onNotice('تم تنزيل ملف بيانات الموظفين بصيغة CSV عامة لتهيئته أو استيراده في SAP.')
+    } catch (error) {
+      console.error('Unable to export employees for SAP.', error)
+      onNotice('تعذر تصدير الموظفين إلى SAP. حاول مجدداً.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  async function deliverSapProducts() {
+    setExporting(true)
+    try {
+      const result = await shareOrDownloadCsv(
+        `natco-sap-products-${new Date().toISOString().slice(0, 10)}.csv`,
+        sapProductsToCsv(filteredProducts),
+      )
+      if (result === 'downloaded') onNotice('تم تنزيل ملف المنتجات بصيغة CSV عامة لتهيئته أو استيراده في SAP.')
+    } catch (error) {
+      console.error('Unable to export products for SAP.', error)
+      onNotice('تعذر تصدير المنتجات إلى SAP. حاول مجدداً.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  async function deliverProducts() {
+    setExporting(true)
+    try {
+      const result = await shareOrDownloadCsv(
+        `natco-products-${new Date().toISOString().slice(0, 10)}.csv`,
+        productsToCsv(filteredProducts),
+      )
+      if (result === 'downloaded') onNotice('تم تنزيل ملف المنتجات CSV المتوافق مع قالب الاستيراد.')
+    } catch (error) {
+      console.error('Unable to export the product catalog.', error)
+      onNotice('تعذر تصدير المنتجات. حاول مجدداً.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   function editProduct(product: CatalogProduct) {
     setEditingId(product.id)
     setDraft({
@@ -847,7 +894,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       {loading && <div className="admin-loading"><LoaderCircle size={19} /> جارٍ تحميل البيانات…</div>}
 
       {!loading && tab === 'orders' && <section className="admin-panel">
-        <div className="admin-panel-heading"><div><h3>طلبات الموظفين</h3><p>تتحدث القائمة تلقائياً عند وصول طلب جديد.</p></div><div className="admin-data-actions"><span>{filteredOrders.length} من {orders.length} طلب</span><button type="button" className="admin-export-button" disabled={exporting || !orders.length} onClick={() => void deliverOrders(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !orders.length} onClick={() => void deliverOrders(true)}><Share2 size={14} /> مشاركة</button><button type="button" className="admin-export-button" disabled={exporting || !orders.some((order) => order.status === 'fulfilled')} onClick={() => void exportCompletedOrders()}><Download size={14} /> تصدير SAP</button><button type="button" className="admin-export-button" disabled={!orders.length} onClick={printCompletedOrderReport}>طباعة التقرير الكامل</button></div></div>
+        <div className="admin-panel-heading"><div><h3>طلبات الموظفين</h3><p>تتحدث القائمة تلقائياً عند وصول طلب جديد. تتبع ملفات CSV ترتيب أعمدة Google Sheet.</p></div><div className="admin-data-actions"><span>{filteredOrders.length} من {orders.length} طلب</span><button type="button" className="admin-export-button" disabled={exporting || !filteredOrders.length} onClick={() => void deliverOrders(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !filteredOrders.length} onClick={() => void deliverOrders(true)}><Share2 size={14} /> مشاركة</button><button type="button" className="admin-export-button" disabled={exporting || !filteredOrders.some((order) => order.status !== 'deleted')} onClick={() => void exportSapOrders()}><Download size={14} /> تصدير SAP</button><button type="button" className="admin-export-button" disabled={!filteredOrders.length} onClick={printCompletedOrderReport}>طباعة التقرير</button></div></div>
         <label className="admin-search"><Search size={16} /><input type="search" value={orderSearch} onChange={(event) => setOrderSearch(event.target.value)} placeholder="ابحث برقم الطلب أو اسم الموظف أو بريده أو كوده..." aria-label="البحث في طلبات الموظفين" /></label>
         <OrderActionRequests user={user} onNotice={onNotice} />
         {orders.length === 0 ? <div className="admin-empty"><ClipboardList size={33} /><strong>لا توجد طلبات حتى الآن</strong><small>تظهر الطلبات الجديدة هنا عند تأكيد الموظفين لها.</small></div> :
@@ -872,6 +919,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         <div className="admin-panel-heading"><div><h3>كتالوج المنتجات</h3><p>صنّف المنتجات واستورد ملف CSV، ثم أضف الصور من محرر كل منتج. تتم مزامنة البيانات والأسعار إلى تبويب «كتالوج المنتجات» في Google Sheets.</p></div></div>
         <div className="admin-product-toolbar">
           <div className="admin-product-import-actions">
+            <button type="button" className="admin-export-button" disabled={exporting || !filteredProducts.length} onClick={() => void deliverSapProducts()}><Download size={14} /> تصدير SAP</button>
+            <button type="button" className="admin-export-button" disabled={exporting || !filteredProducts.length} onClick={() => void deliverProducts()}><Download size={14} /> تصدير CSV</button>
             <button className="roster-template-button" type="button" onClick={downloadProductTemplate}><Download size={14} /> تنزيل قالب CSV</button>
             <label className="roster-file-button"><Upload size={15} /> استيراد CSV<input type="file" accept=".csv,text/csv" disabled={working} onChange={(event) => { void readProductCsv(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = '' }} /></label>
             <button className="admin-add-button" onClick={() => { closeProductEditor(); setEditingId('new') }}><Plus size={16} /> إضافة منتج</button>
@@ -928,7 +977,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           <label className="field"><span>رقم الهاتف مع رمز الدولة</span><input required type="tel" dir="ltr" value={employeePhone} onChange={(event) => setEmployeePhone(event.target.value)} placeholder="+967 7XX XXX XXX" /></label>
           <button className="admin-add-button" disabled={working}><Plus size={15} /> اعتماد الموظف</button>
         </form>
-        <div className="admin-roster-toolbar"><div className="admin-data-actions"><span>{employees.length} موظف</span><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(true)}><Share2 size={14} /> مشاركة</button></div></div>
+        <div className="admin-roster-toolbar"><div className="admin-data-actions"><span>{employees.length} موظف</span><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(false)}><Download size={14} /> تصدير CSV</button><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverEmployees(true)}><Share2 size={14} /> مشاركة</button><button type="button" className="admin-export-button" disabled={exporting || !employees.length} onClick={() => void deliverSapEmployees()}><Download size={14} /> تصدير SAP</button></div></div>
         <AdminEmployeeProfiles user={user} organizationOptions={organizationOptions} onNotice={onNotice} />
       </section>}
 
