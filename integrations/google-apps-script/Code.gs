@@ -13,6 +13,9 @@ const ORDER_ITEM_SHEET_NAME = 'تفاصيل الطلبات';
 const SUMMARY_SHEET_NAME = 'ملخص';
 const SYNC_LOG_SHEET_NAME = 'سجل المزامنة';
 const SHEET_SCHEMA_VERSION = '3';
+const QUEUE_BATCH_SIZE = 3;
+const URLFETCH_QUOTA_PAUSE_PROPERTY = 'URLFETCH_QUOTA_PAUSED_UNTIL';
+const URLFETCH_QUOTA_PAUSE_MS = 24 * 60 * 60 * 1000;
 const EMPLOYEE_HEADERS = [
   'اسم الموظف', 'البريد الإلكتروني', 'الرقم الوظيفي', 'الشركة/الشركة التابعة',
   'الفرع', 'المحافظة', 'السقف الشهري المعتمد', 'الإنفاق الشهري الحالي', 'حالة الحساب',
@@ -105,14 +108,11 @@ function initializeNatcoIntegration_() {
   removeDuplicateDataRows_(spreadsheet);
   ensureQueueTrigger_();
   ensureSpreadsheetEditTrigger_(spreadsheetId);
-  syncAllNatcoEmployees(false);
   initializeEmployeeSpendingPeriod_();
-  syncAllNatcoProducts();
-  syncAllNatcoOrders();
-  syncDeletedNatcoOrdersNow();
 
   console.log(
-    'تم تجهيز Google Sheets ومزامنة الطلبات كل دقيقة تقريباً. رابط الجدول: ' + spreadsheetUrl,
+    'تم تجهيز Google Sheets والمزامنة المحدودة للصفوف الجديدة كل خمس دقائق. ' +
+    'لم تُشغّل مزامنة تاريخية شاملة تلقائياً. رابط الجدول: ' + spreadsheetUrl,
   );
 }
 
@@ -142,7 +142,22 @@ function syncAllNatcoData() {
   }
 }
 
+function repairNatcoTriggersNow() {
+  const resumeAt = Date.now() + URLFETCH_QUOTA_PAUSE_MS;
+  PropertiesService.getScriptProperties()
+    .setProperty(URLFETCH_QUOTA_PAUSE_PROPERTY, String(resumeAt));
+  ensureQueueTrigger_();
+  console.log(
+    'أزيلت مشغلات المسح الكامل والمشغلات المتكررة. أوقفت طلبات Firestore حتى ' +
+    new Date(resumeAt).toISOString() + ' لتجنب تكرار خطأ الحصة اليومية.',
+  );
+}
+
 function processNatcoOrderQueue() {
+  if (urlFetchQuotaPauseUntil_() > Date.now()) {
+    console.warn('توقفت المزامنة مؤقتاً بعد بلوغ حصة UrlFetch اليومية؛ ستستأنف تلقائياً بعد انتهاء فترة التوقف.');
+    return;
+  }
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return;
   try {
@@ -155,7 +170,6 @@ function processNatcoOrderQueue() {
       throw new Error('تحقق من عناوين المستلمين ورابط Google Sheets في إعدادات لوحة المشرف.');
     }
 
-    const now = new Date();
     const queries = [
       {
         structuredQuery: {
@@ -167,7 +181,7 @@ function processNatcoOrderQueue() {
               value: { stringValue: 'pending' },
             },
           },
-          limit: 100,
+          limit: QUEUE_BATCH_SIZE,
         },
       },
       {
@@ -175,64 +189,44 @@ function processNatcoOrderQueue() {
           from: [{ collectionId: NOTIFICATION_COLLECTION }],
           where: {
             fieldFilter: {
-              field: { fieldPath: 'nextAttemptAt' },
-              op: 'LESS_THAN_OR_EQUAL',
-              value: { timestampValue: now.toISOString() },
+              field: { fieldPath: 'status' },
+              op: 'EQUAL',
+              value: { stringValue: 'retry' },
             },
           },
-          limit: 100,
+          limit: QUEUE_BATCH_SIZE,
         },
       },
     ];
+    let processedOrders = 0;
     queries.forEach(function (query) {
       const response = firestoreRequest_('post', ':runQuery', query);
       (response || []).forEach(function (entry) {
         if (entry.error) throw new Error('Firestore query failed: ' + JSON.stringify(entry.error).slice(0, 300));
-        if (entry.document) {
+        if (entry.document && processedOrders < QUEUE_BATCH_SIZE) {
           const queue = decodeFields_(entry.document.fields || {});
           if (queue.status === 'pending' || queue.status === 'retry') {
+            processedOrders += 1;
             deliverOrder_(entry.document, recipients, spreadsheetId);
           }
         }
       });
     });
-    syncEmployeesFromSheet_(spreadsheetId);
-    processEmployeeSyncQueue_(spreadsheetId);
-    processCatalogSyncQueue_(spreadsheetId);
-    syncCatalogFromSheet_(spreadsheetId);
+    processEmployeeSyncQueue_(spreadsheetId, QUEUE_BATCH_SIZE);
+    processCatalogSyncQueue_(spreadsheetId, QUEUE_BATCH_SIZE);
     rolloverEmployeeSpending_(spreadsheetId);
-    syncEmployeesFromSheet_(spreadsheetId);
+  } catch (error) {
+    if (isUrlFetchQuotaError_(error)) {
+      console.error('أُوقفت دورات المزامنة المجدولة حتى تجدد حصة UrlFetch اليومية.');
+      return;
+    }
+    throw error;
   } finally {
     lock.releaseLock();
   }
 }
 
 function retryNatcoOrderQueueNow() {
-  const response = firestoreRequest_('post', ':runQuery', {
-    structuredQuery: {
-      from: [{ collectionId: NOTIFICATION_COLLECTION }],
-      where: {
-        fieldFilter: {
-          field: { fieldPath: 'status' },
-          op: 'EQUAL',
-          value: { stringValue: 'retry' },
-        },
-      },
-      limit: 100,
-    },
-  });
-  let resetCount = 0;
-  (response || []).forEach(function (entry) {
-    if (entry.error) throw new Error('Firestore retry query failed: ' + JSON.stringify(entry.error).slice(0, 300));
-    if (!entry.document) return;
-    const queueId = entry.document.name.split('/').pop();
-    patchDocument_(NOTIFICATION_COLLECTION, queueId, {
-      status: 'pending',
-      nextAttemptAt: new Date(0),
-    });
-    resetCount += 1;
-  });
-  console.log('أُعيدت جدولة ' + resetCount + ' إشعارات فاشلة للمحاولة الآن.');
   processNatcoOrderQueue();
 }
 
@@ -252,7 +246,7 @@ function deliverOrder_(queueDocument, recipients, spreadsheetId) {
         deletedAt: new Date(),
         lastError: '',
       });
-      logSync_('التطبيق → Google Sheets', 'طلب محذوف نهائياً', queueId, 'حُذفت صفوف الطلب');
+      logSync_('التطبيق → Google Sheets', 'طلب محذوف نهائياً', queueId, 'حُذفت صفوف الطلب', spreadsheetId);
       return;
     }
     patchDocument_(NOTIFICATION_COLLECTION, queueId, {
@@ -279,12 +273,11 @@ function deliverOrder_(queueDocument, recipients, spreadsheetId) {
     let sheetRow = queue.sheetRow || 0;
     try {
       sheetRow = syncOrderRow_(queueId, order, spreadsheetId);
-      syncEmployeeRow_(order.email, spreadsheetId);
       patchDocument_(NOTIFICATION_COLLECTION, queueId, {
         sheetRow: sheetRow,
         sheetWrittenAt: new Date(),
       });
-      logSync_('التطبيق → Google Sheets', 'طلب', queueId, 'تمت المزامنة');
+      logSync_('التطبيق → Google Sheets', 'طلب', queueId, 'تمت المزامنة', spreadsheetId);
     } catch (sheetError) {
       const message = sheetError instanceof Error ? sheetError.message : String(sheetError);
       deliveryErrors.push('Google Sheets: ' + message);
@@ -301,6 +294,7 @@ function deliverOrder_(queueDocument, recipients, spreadsheetId) {
       lastError: '',
     });
   } catch (error) {
+    if (isUrlFetchQuotaError_(error)) throw error;
     const delayMinutes = Math.min(60, Math.pow(2, Math.min(attempts - 1, 6)));
     const message = error instanceof Error ? error.message : String(error);
     try {
@@ -442,7 +436,7 @@ function deleteOrderRows_(orderId, spreadsheetId) {
     .forEach(function (row) { itemSheet.deleteRow(row); });
 }
 
-function processEmployeeSyncQueue_(spreadsheetId) {
+function processEmployeeSyncQueue_(spreadsheetId, batchSize) {
   const response = firestoreRequest_('post', ':runQuery', {
     structuredQuery: {
       from: [{ collectionId: EMPLOYEE_SYNC_COLLECTION }],
@@ -453,7 +447,7 @@ function processEmployeeSyncQueue_(spreadsheetId) {
           value: { stringValue: 'pending' },
         },
       },
-      limit: 100,
+      limit: batchSize,
     },
   });
   (response || []).forEach(function (entry) {
@@ -475,8 +469,9 @@ function processEmployeeSyncQueue_(spreadsheetId) {
         syncedAt: new Date(),
         lastError: '',
       });
-      logSync_('التطبيق → Google Sheets', 'موظف', queue.email || queueId, 'تمت المزامنة');
+      logSync_('التطبيق → Google Sheets', 'موظف', queue.email || queueId, 'تمت المزامنة', spreadsheetId);
     } catch (error) {
+      if (isUrlFetchQuotaError_(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
       console.error('Employee sheet synchronization failed for ' + queueId + '.', error);
       patchDocument_(EMPLOYEE_SYNC_COLLECTION, queueId, {
@@ -486,7 +481,7 @@ function processEmployeeSyncQueue_(spreadsheetId) {
   });
 }
 
-function processCatalogSyncQueue_(spreadsheetId) {
+function processCatalogSyncQueue_(spreadsheetId, batchSize) {
   const response = firestoreRequest_('post', ':runQuery', {
     structuredQuery: {
       from: [{ collectionId: CATALOG_SYNC_COLLECTION }],
@@ -497,7 +492,7 @@ function processCatalogSyncQueue_(spreadsheetId) {
           value: { stringValue: 'pending' },
         },
       },
-      limit: 100,
+      limit: batchSize,
     },
   });
   (response || []).forEach(function (entry) {
@@ -518,8 +513,9 @@ function processCatalogSyncQueue_(spreadsheetId) {
         syncedAt: new Date(),
         lastError: '',
       });
-      logSync_('التطبيق → Google Sheets', 'منتج', queue.productId || queueId, 'تمت المزامنة');
+      logSync_('التطبيق → Google Sheets', 'منتج', queue.productId || queueId, 'تمت المزامنة', spreadsheetId);
     } catch (error) {
+      if (isUrlFetchQuotaError_(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
       console.error('Catalog sheet synchronization failed for ' + queueId + '.', error);
       patchDocument_(CATALOG_SYNC_COLLECTION, queueId, { lastError: message.slice(0, 500) });
@@ -610,6 +606,7 @@ function syncCatalogFromSheet_(spreadsheetId) {
 }
 
 function handleCatalogSheetEdit(event) {
+  if (urlFetchQuotaPauseUntil_() > Date.now()) return;
   if (!event || !event.range || event.range.getRow() < 2) return;
   const sheet = event.range.getSheet();
   if (sheet.getName() !== PRODUCT_SHEET_NAME) return;
@@ -625,6 +622,7 @@ function handleCatalogSheetEdit(event) {
       else syncCatalogProductRow_(productId, '', null, sheet);
       logSync_('Google Sheets → التطبيق', 'منتج', productId, 'تمت المزامنة');
     } catch (error) {
+      if (isUrlFetchQuotaError_(error)) return;
       syncCatalogProductRow_(productId, '', null, sheet);
       sheet.getRange(rowNumber, 1, 1, PRODUCT_HEADERS.length).setBackground('#fce4e4');
       logSync_('Google Sheets → التطبيق', 'منتج', productId,
@@ -798,13 +796,12 @@ function findEmployeeProfile_(email) {
 }
 
 function handleEmployeeSheetEdit(event) {
+  if (urlFetchQuotaPauseUntil_() > Date.now()) return;
   if (!event || !event.range) return;
   const sheet = event.range.getSheet();
   if (sheet.getName() !== EMPLOYEE_SHEET_NAME || event.range.getRow() < 2) return;
   if (!ensureEmployeeHeaders_(sheet)) {
-    ensureEmployeeSheet_(sheet.getParent());
-    syncAllNatcoEmployees(false);
-    return;
+    throw new Error('تعذر تحديد أعمدة الموظفين؛ صحح عناوين الصف الأول ثم أعد التعديل.');
   }
   const firstRow = event.range.getRow();
   const rowCount = event.range.getNumRows();
@@ -837,6 +834,7 @@ function handleEmployeeSheetEdit(event) {
       importEmployeeSheetRow_(sheet, rowNumber);
       logSync_('Google Sheets → التطبيق', 'موظف', email, 'تمت المزامنة');
     } catch (error) {
+      if (isUrlFetchQuotaError_(error)) return;
       console.error('Unable to import edited employee row ' + rowNumber + '.', error);
       const visibleEmail = String(sheet.getRange(rowNumber, 2).getValue() || '').trim().toLowerCase();
       if (visibleEmail && visibleEmail !== email) syncEmployeeRow_(visibleEmail, '', sheet);
@@ -875,6 +873,7 @@ function findEmployeeEmailsByField_(fieldPath, value, resultLimit) {
 }
 
 function handleNatcoSheetEdit(event) {
+  if (urlFetchQuotaPauseUntil_() > Date.now()) return;
   if (!event || !event.range) return;
   const name = event.range.getSheet().getName();
   if (name === EMPLOYEE_SHEET_NAME) handleEmployeeSheetEdit(event);
@@ -900,6 +899,7 @@ function handleOrderSheetEdit(event) {
       }
       logSync_('Google Sheets → التطبيق', 'طلب', orderId, 'تمت المزامنة');
     } catch (error) {
+      if (isUrlFetchQuotaError_(error)) return;
       syncOrderRowFromFirestore_(orderId);
       sheet.getRange(rowNumber, 1, 1, ORDER_HEADERS.length).setBackground('#fce4e4');
       logSync_('Google Sheets → التطبيق', 'طلب', orderId, 'فشل: ' + errorMessage_(error));
@@ -929,6 +929,7 @@ function handleOrderItemSheetEdit(event) {
       }
       logSync_('Google Sheets → التطبيق', 'محتوى طلب', orderId, 'تمت المزامنة');
     } catch (error) {
+      if (isUrlFetchQuotaError_(error)) return;
       syncOrderRowFromFirestore_(orderId);
       sheet.getRange(rowNumber, 1, 1, ORDER_ITEM_HEADERS.length).setBackground('#fce4e4');
       logSync_('Google Sheets → التطبيق', 'محتوى طلب', orderId, 'فشل: ' + errorMessage_(error));
@@ -1649,10 +1650,10 @@ function uniqueSheetName_(spreadsheet, baseName) {
   return name;
 }
 
-function logSync_(direction, dataType, id, result) {
+function logSync_(direction, dataType, id, result, knownSpreadsheetId) {
   try {
-    const settings = getSettingsDocument_();
-    const spreadsheetId = settings && spreadsheetIdFromUrl_(settings.spreadsheetUrl);
+    const settings = knownSpreadsheetId ? null : getSettingsDocument_();
+    const spreadsheetId = knownSpreadsheetId || (settings && spreadsheetIdFromUrl_(settings.spreadsheetUrl));
     if (!spreadsheetId) return;
     const sheet = ensureSyncLogSheet_(SpreadsheetApp.openById(spreadsheetId));
     sheet.appendRow([new Date(), direction, dataType, safeSheetValue_(id), safeSheetValue_(result)]);
@@ -1814,15 +1815,20 @@ function ensureSpreadsheetEditTrigger_(spreadsheetId) {
 }
 
 function ensureQueueTrigger_() {
-  let exists = false;
+  const obsoleteFullSyncHandlers = [
+    'syncAllNatcoData',
+    'syncAllNatcoEmployees',
+    'syncAllNatcoProducts',
+    'syncAllNatcoOrders',
+    'syncDeletedNatcoOrdersNow',
+  ];
   ScriptApp.getProjectTriggers().forEach(function (trigger) {
-    if (trigger.getHandlerFunction() !== 'processNatcoOrderQueue') return;
-    if (exists) ScriptApp.deleteTrigger(trigger);
-    else exists = true;
+    const handler = trigger.getHandlerFunction();
+    if (handler === 'processNatcoOrderQueue' || obsoleteFullSyncHandlers.indexOf(handler) >= 0) {
+      ScriptApp.deleteTrigger(trigger);
+    }
   });
-  if (!exists) {
-    ScriptApp.newTrigger('processNatcoOrderQueue').timeBased().everyMinutes(1).create();
-  }
+  ScriptApp.newTrigger('processNatcoOrderQueue').timeBased().everyMinutes(5).create();
 }
 
 function getSettingsDocument_() {
@@ -1838,23 +1844,13 @@ function getDocument_(collection, documentId) {
 }
 
 function getDocumentSnapshot_(collection, documentId) {
-  const projectId = PropertiesService.getScriptProperties().getProperty('FIREBASE_PROJECT_ID');
-  if (!projectId) throw new Error('شغّل initializeNatcoIntegration أولاً لإعداد Firebase Project ID.');
-  const url = 'https://firestore.googleapis.com/v1/projects/' +
-    encodeURIComponent(projectId) + '/databases/(default)/documents/' +
-    collection + '/' + encodeURIComponent(documentId);
-  const response = UrlFetchApp.fetch(url, {
-    method: 'get',
-    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-    muteHttpExceptions: true,
-  });
-  const status = response.getResponseCode();
-  if (status === 404) return null;
-  if (status < 200 || status >= 300) {
-    throw new Error('تعذر قراءة سجل المزامنة (' + status + '): ' +
-      response.getContentText().slice(0, 250));
-  }
-  const document = JSON.parse(response.getContentText());
+  const document = firestoreRequest_(
+    'get',
+    '/' + collection + '/' + encodeURIComponent(documentId),
+    null,
+    true,
+  );
+  if (!document) return null;
   const data = decodeFields_(document.fields || {});
   data.id = document.name.split('/').pop();
   return { data: data, updateTime: document.updateTime, name: document.name };
@@ -1884,6 +1880,13 @@ function patchDocumentFields_(collection, documentId, values, fieldPaths) {
 }
 
 function firestoreRequest_(method, path, queryOrBody, bodyOrOptional) {
+  const pauseUntil = urlFetchQuotaPauseUntil_();
+  if (pauseUntil > Date.now()) {
+    throw urlFetchQuotaError_(
+      'توقفت مزامنة Firestore مؤقتاً حتى ' + new Date(pauseUntil).toISOString() +
+      ' بسبب بلوغ حصة UrlFetch اليومية.',
+    );
+  }
   const projectId = PropertiesService.getScriptProperties().getProperty('FIREBASE_PROJECT_ID');
   if (!projectId) throw new Error('شغّل initializeNatcoIntegration أولاً لإعداد Firebase Project ID.');
   let url = 'https://firestore.googleapis.com/v1/projects/' +
@@ -1902,13 +1905,27 @@ function firestoreRequest_(method, path, queryOrBody, bodyOrOptional) {
     body = bodyOrOptional;
   }
 
-  const response = UrlFetchApp.fetch(url, {
-    method: method,
-    contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-    payload: body ? JSON.stringify(body) : undefined,
-    muteHttpExceptions: true,
-  });
+  let response;
+  try {
+    response = UrlFetchApp.fetch(url, {
+      method: method,
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      payload: body ? JSON.stringify(body) : undefined,
+      muteHttpExceptions: true,
+    });
+  } catch (error) {
+    if (isUrlFetchQuotaError_(error)) {
+      const until = Date.now() + URLFETCH_QUOTA_PAUSE_MS;
+      PropertiesService.getScriptProperties()
+        .setProperty(URLFETCH_QUOTA_PAUSE_PROPERTY, String(until));
+      throw urlFetchQuotaError_(
+        'بلغ مشروع Apps Script حصة UrlFetch اليومية. أوقفت المزامنة المجدولة حتى ' +
+        new Date(until).toISOString() + '.',
+      );
+    }
+    throw error;
+  }
   const status = response.getResponseCode();
   if (optional && status === 404) return null;
   if (status < 200 || status >= 300) {
@@ -1916,6 +1933,24 @@ function firestoreRequest_(method, path, queryOrBody, bodyOrOptional) {
   }
   const content = response.getContentText();
   return content ? JSON.parse(content) : null;
+}
+
+function urlFetchQuotaPauseUntil_() {
+  return Number(
+    PropertiesService.getScriptProperties().getProperty(URLFETCH_QUOTA_PAUSE_PROPERTY) || 0,
+  );
+}
+
+function isUrlFetchQuotaError_(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return Boolean(error && error.name === 'NatcoUrlFetchQuotaError') ||
+    /Service invoked too many times for one day:\s*urlfetch/i.test(message);
+}
+
+function urlFetchQuotaError_(message) {
+  const error = new Error(message);
+  error.name = 'NatcoUrlFetchQuotaError';
+  return error;
 }
 
 function encodeFields_(fields) {
