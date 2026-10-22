@@ -322,8 +322,7 @@ export function AppLayout(props: AppLayoutProps) {
         if (!authUser) return
         await enablePushSubscription(authUser)
         setPushEnabled(true)
-        await playNotificationSound()
-        setNotice('تم تفعيل الإشعارات على هذا الجهاز. ستصل تحديثات الطلبات حتى عند إغلاق التطبيق.')
+        setNotice('تم تفعيل الإشعارات على هذا الجهاز.')
       } else {
         setNotice('لم يتم منح إذن إشعارات الجهاز. يمكنك تغييره من إعدادات المتصفح.')
       }
@@ -499,12 +498,11 @@ export function AppLayout(props: AppLayoutProps) {
                 </div>
               </div>
               <div className="notification-settings">
-                {notificationPermission === 'default' && <button type="button" onClick={() => void enablePhoneNotifications()}>تفعيل Push على هذا الجهاز</button>}
+                {notificationPermission === 'default' && <button type="button" onClick={() => void enablePhoneNotifications()}>تفعيل الإشعارات</button>}
                 {notificationPermission === 'granted' && <span><Check size={13} /> {pushEnabled ? 'Push مفعّل على هذا الجهاز' : 'إذن المتصفح مفعّل'}</span>}
                 {notificationPermission === 'denied' && <span>إذن إشعارات الجهاز مرفوض؛ فعّله من إعدادات المتصفح.</span>}
                 {notificationPermission === 'unsupported' && <span>إشعارات النظام غير مدعومة في هذا المتصفح.</span>}
-                {notificationPermissionGranted && !pushEnabled && <button type="button" onClick={() => void enablePhoneNotifications()}>إكمال تفعيل Push</button>}
-                <button type="button" onClick={() => void playNotificationSound().catch(() => setNotice('تعذر تشغيل الصوت؛ تحقق من إعدادات الصوت في الجهاز.'))}>اختبار الصوت</button>
+                {notificationPermissionGranted && !pushEnabled && <button type="button" onClick={() => void enablePhoneNotifications()}>إكمال تفعيل الإشعارات</button>}
               </div>
               {isIosDevice && !isStandalone && <div className="notification-pwa-hint">على iPhone أو iPad: أضف التطبيق إلى الشاشة الرئيسية أولاً، ثم افتحه منها لتفعيل Push.</div>}
               {(installPrompt || (isIosDevice && !isStandalone)) && <div className="notification-install">
