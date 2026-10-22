@@ -1129,7 +1129,7 @@ function commitFirestoreWrites_(writes) {
   const projectId = PropertiesService.getScriptProperties().getProperty('FIREBASE_PROJECT_ID');
   const url = 'https://firestore.googleapis.com/v1/projects/' +
     encodeURIComponent(projectId) + '/databases/(default)/documents:commit';
-  const response = UrlFetchApp.fetch(url, {
+  const response = firestoreFetch_(url, {
     method: 'post',
     contentType: 'application/json',
     headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
@@ -1880,13 +1880,6 @@ function patchDocumentFields_(collection, documentId, values, fieldPaths) {
 }
 
 function firestoreRequest_(method, path, queryOrBody, bodyOrOptional) {
-  const pauseUntil = urlFetchQuotaPauseUntil_();
-  if (pauseUntil > Date.now()) {
-    throw urlFetchQuotaError_(
-      'توقفت مزامنة Firestore مؤقتاً حتى ' + new Date(pauseUntil).toISOString() +
-      ' بسبب بلوغ حصة UrlFetch اليومية.',
-    );
-  }
   const projectId = PropertiesService.getScriptProperties().getProperty('FIREBASE_PROJECT_ID');
   if (!projectId) throw new Error('شغّل initializeNatcoIntegration أولاً لإعداد Firebase Project ID.');
   let url = 'https://firestore.googleapis.com/v1/projects/' +
@@ -1905,15 +1898,32 @@ function firestoreRequest_(method, path, queryOrBody, bodyOrOptional) {
     body = bodyOrOptional;
   }
 
-  let response;
+  const response = firestoreFetch_(url, {
+    method: method,
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    payload: body ? JSON.stringify(body) : undefined,
+    muteHttpExceptions: true,
+  });
+  const status = response.getResponseCode();
+  if (optional && status === 404) return null;
+  if (status < 200 || status >= 300) {
+    throw new Error('Firestore API request failed (' + status + '): ' + response.getContentText().slice(0, 300));
+  }
+  const content = response.getContentText();
+  return content ? JSON.parse(content) : null;
+}
+
+function firestoreFetch_(url, options) {
+  const pauseUntil = urlFetchQuotaPauseUntil_();
+  if (pauseUntil > Date.now()) {
+    throw urlFetchQuotaError_(
+      'توقفت مزامنة Firestore مؤقتاً حتى ' + new Date(pauseUntil).toISOString() +
+      ' بسبب بلوغ حصة UrlFetch اليومية.',
+    );
+  }
   try {
-    response = UrlFetchApp.fetch(url, {
-      method: method,
-      contentType: 'application/json',
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      payload: body ? JSON.stringify(body) : undefined,
-      muteHttpExceptions: true,
-    });
+    return UrlFetchApp.fetch(url, options);
   } catch (error) {
     if (isUrlFetchQuotaError_(error)) {
       const until = Date.now() + URLFETCH_QUOTA_PAUSE_MS;
@@ -1926,13 +1936,6 @@ function firestoreRequest_(method, path, queryOrBody, bodyOrOptional) {
     }
     throw error;
   }
-  const status = response.getResponseCode();
-  if (optional && status === 404) return null;
-  if (status < 200 || status >= 300) {
-    throw new Error('Firestore API request failed (' + status + '): ' + response.getContentText().slice(0, 300));
-  }
-  const content = response.getContentText();
-  return content ? JSON.parse(content) : null;
 }
 
 function urlFetchQuotaPauseUntil_() {
