@@ -39,7 +39,9 @@
 .admin-add-button:disabled { opacity: .6; }
 .admin-order-list { display: grid; gap: 9px; }
 .admin-order { padding: 12px; border: 1px solid #eceef3; border-radius: 8px; background: #fff; }
+.admin-order.notification-focused { border-color: var(--orange); box-shadow: 0 0 0 3px #f5822030, 0 10px 28px #16276612; animation: notification-focus 4.5s ease-out forwards; }
 .admin-order.status-deleted { border-color: #efb8b8; background: #fff7f7; }
+@keyframes notification-focus { 0%,70% { border-color: var(--orange); box-shadow: 0 0 0 3px #f5822030, 0 10px 28px #16276612; } 100% { border-color: #eceef3; box-shadow: none; } }
 .admin-order-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .admin-order-top > div { display: flex; align-items: center; gap: 8px; }
 .admin-order-top strong { color: var(--navy); font-family: Arial,sans-serif; font-size: 11px; }

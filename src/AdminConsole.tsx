@@ -28,6 +28,7 @@ import './AdminConsole.css'
 
 type Props = {
   user: User
+  focusOrderId: string
   onNotice: (message: string) => void
   onOrganizationOptionsChange: (options: OrganizationOptions) => void
   organizationOptions: OrganizationOptions
@@ -59,7 +60,7 @@ function readImageAsDataUrl(file: File): Promise<string> {
   })
 }
 
-export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, organizationOptions }: Props) {
+export function AdminConsole({ user, focusOrderId, onNotice, onOrganizationOptionsChange, organizationOptions }: Props) {
   const [tab, setTab] = useState<'orders' | 'products' | 'baskets' | 'employees' | 'settings' | 'organization'>('orders')
   const [orders, setOrders] = useState<Order[]>([])
   const [products, setProducts] = useState<CatalogProduct[]>([])
@@ -181,6 +182,17 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       unsubscribeEmployees()
     }
   }, [])
+
+  useEffect(() => {
+    if (!focusOrderId || loading || !orders.some((order) => order.id === focusOrderId)) return
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(`admin-order-${focusOrderId}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [focusOrderId, loading, orders])
 
   async function seedCatalog() {
     if (!firestore) return
@@ -1060,7 +1072,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         <OrderActionRequests user={user} onNotice={onNotice} />
         {orders.length === 0 ? <div className="admin-empty"><ClipboardList size={33} /><strong>لا توجد طلبات حتى الآن</strong><small>تظهر الطلبات الجديدة هنا عند تأكيد الموظفين لها.</small></div> :
           filteredOrders.length === 0 ? <div className="admin-empty"><Search size={30} /><strong>لا توجد نتائج مطابقة</strong><small>جرّب البحث برقم الطلب أو بيانات الموظف.</small></div> :
-          <div className="admin-order-list">{filteredOrders.map((order) => <article className={`admin-order status-${order.status}`} key={order.id}>
+          <div className="admin-order-list">{filteredOrders.map((order) => <article id={`admin-order-${order.id}`} className={`admin-order status-${order.status}${focusOrderId === order.id ? ' notification-focused' : ''}`} key={order.id}>
             <div className="admin-order-top"><div><strong>{order.reference}</strong><span className={`order-status status-${order.status}`}>{orderStatusLabels[order.status]}</span></div>
                 <time>{order.createdAt && new Intl.DateTimeFormat('ar-YE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(order.createdAt))}</time></div>
             <div className="admin-order-employee"><b>{order.profile.name}</b><span>الكود الوظيفي: {order.profile.employeeCode}</span><span>{order.profile.company} · {order.profile.branch}</span><span>{order.profile.phone} · واتساب: {order.profile.whatsapp}</span><span>{order.profile.address}</span></div>

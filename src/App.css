@@ -32,8 +32,31 @@
 .topbar-actions { display: flex; align-items: center; gap: 19px; }
 .topbar-season { display: flex; align-items: center; gap: 7px; color: #71798e; font-size: 10px; }
 .season-dot { width: 6px; height: 6px; border-radius: 50%; background: #39a878; box-shadow: 0 0 0 3px #39a8781d; }
-.notification-button { position: relative; padding: 7px; display: grid; place-items: center; background: transparent; color: #71798e; border: 0; }
-.notification-button span { position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--orange); top: 5px; right: 5px; border: 1px solid #fff; }
+.notification-wrap { position: relative; }
+.notification-button { position: relative; width: 35px; height: 35px; padding: 7px; display: grid; place-items: center; background: transparent; color: #71798e; border: 0; border-radius: 9px; }
+.notification-button:hover,.notification-button[aria-expanded="true"] { color: var(--navy); background: #f5f6fa; }
+.notification-count { position: absolute; top: -2px; right: -3px; min-width: 17px; height: 17px; padding: 0 4px; display: grid; place-items: center; border: 2px solid #fff; border-radius: 9px; color: #fff; background: var(--orange); font: 700 9px Arial,sans-serif; }
+.notification-panel { position: absolute; z-index: 30; top: calc(100% + 10px); left: 0; width: min(360px, calc(100vw - 24px)); overflow: hidden; border: 1px solid #e8eaf0; border-radius: 14px; background: #fff; box-shadow: 0 18px 48px #15234b24; }
+.notification-panel-heading { min-height: 62px; display: flex; align-items: center; justify-content: space-between; padding: 12px 15px; border-bottom: 1px solid #eef0f4; }
+.notification-panel-heading > div { display: grid; gap: 4px; }
+.notification-panel-heading strong { color: #25324f; font-size: 13px; }
+.notification-panel-heading small { color: #8b93a4; font-size: 10px; }
+.notification-panel-heading > button { padding: 6px 8px; border: 0; border-radius: 7px; color: var(--navy); background: #f3f5f9; font-size: 9px; }
+.notification-list { max-height: min(390px, calc(100dvh - 130px)); overflow-y: auto; }
+.notification-item { width: 100%; min-height: 76px; display: flex; align-items: center; gap: 10px; padding: 10px 13px; border: 0; border-bottom: 1px solid #f1f2f5; color: inherit; background: #fff; text-align: right; transition: background .16s ease; }
+.notification-item:hover { background: #f8f9fc; }
+.notification-item:last-child { border-bottom: 0; }
+.notification-item-icon { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; border-radius: 10px; color: var(--navy); background: #edf0f8; }
+.notification-item-icon.status-received { color: #d96d10; background: #fff2e6; }
+.notification-item-icon.status-ready,.notification-item-icon.status-fulfilled { color: #21805b; background: #e9f7f0; }
+.notification-item-icon.status-cancelled,.notification-item-icon.status-deleted { color: #a34a45; background: #fff0ef; }
+.notification-item-copy { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.notification-item-copy strong { overflow: hidden; color: #303b54; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.notification-item-copy small { overflow: hidden; color: #727b90; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.notification-item-copy time { color: #a0a6b3; font-size: 8px; }
+.notification-item-arrow { flex: 0 0 auto; color: #a4a9b5; transform: rotate(90deg); }
+.notification-empty { min-height: 118px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #9299a8; font-size: 10px; }
+.notification-empty svg { color: #c2c7d2; }
 .account-menu-wrap { position: relative; }
 .account-menu-trigger { display: flex; align-items: center; gap: 7px; padding: 4px 7px; border: 1px solid transparent; border-radius: 8px; color: #626d84; background: transparent; }
 .account-menu-trigger:hover,.account-menu-trigger[aria-expanded="true"] { border-color: #e8eaf0; background: #fafbfc; }
@@ -338,6 +361,7 @@
   .topbar-season { display: none; }
   .account-trigger-name { max-width: 84px; font-size: 9px; }
   .account-menu { left: 0; }
+  .notification-panel { position: fixed; top: 63px; right: 12px; left: 12px; width: auto; }
   .main-content { padding: 16px 17px; }
   .has-mobile-nav .main-content { padding-bottom: 77px; }
   .welcome-banner { min-height: 147px; padding: 23px 21px; border-radius: 12px; }

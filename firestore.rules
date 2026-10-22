@@ -545,7 +545,10 @@ service cloud.firestore {
     }
 
     match /order_notifications/{orderId} {
-      allow get, list: if isAdmin();
+      allow get, list: if isAdmin()
+        || (signedIn()
+          && isApprovedEmployee()
+          && resource.data.uid == request.auth.uid);
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly([
           'orderId', 'uid', 'status', 'eventStatus', 'createdAt', 'updatedAt'

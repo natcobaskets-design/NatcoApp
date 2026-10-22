@@ -5,15 +5,16 @@ import {
   signInWithEmailAndPassword, signOut,
 } from 'firebase/auth'
 import {
-  collection, doc, getDoc, onSnapshot, query, serverTimestamp, writeBatch,
-  setDoc, where,
+  Timestamp, collection, doc, getDoc, limit, onSnapshot, orderBy, query, serverTimestamp,
+  writeBatch, setDoc, where,
 } from 'firebase/firestore'
-import { AppLayout } from './AppLayout'
+import { AppLayout, type AppNotification } from './AppLayout'
 import { createEmployeeSignupAccount, firebaseAuth, firebaseConfigured, firebaseErrorMessage, firebaseProjectId, firestore } from './firebase'
 import {
   blankProfile, parseCatalogProduct, parseOrder, parseProfile, productAgentPrice,
   defaultBasketDefinitions, defaultBasketSelectionSettings, defaultOrganizationOptions,
-  parseBasketDefinition, parseOrganizationOptions, type BasketCounts, type CatalogProduct, type EmployeeProfile, type Order,
+  orderStatusLabels, parseBasketDefinition, parseOrganizationOptions, type BasketCounts,
+  type CatalogProduct, type EmployeeProfile, type Order, type OrderStatus,
   type OrganizationOptions, type Screen,
 } from './domain'
 import { toE164PhoneNumber } from './rosterImport'
@@ -154,6 +155,26 @@ function orderEditComparison(
   return `تم التعديل على الطلب ${previous.reference}.\nقبل التعديل: ${previous.totalAmount ?? 0} ر.ي.\nبعد التعديل: ${next.totalAmount ?? 0} ر.ي.\nالتغييرات: ${changes.join('؛ ')}.`
 }
 
+function isOrderStatus(value: string): value is OrderStatus {
+  return Object.hasOwn(orderStatusLabels, value)
+}
+
+function parseNotification(id: string, data: Record<string, unknown>): AppNotification | null {
+  const orderId = typeof data.orderId === 'string' ? data.orderId : id
+  const status = data.eventStatus
+  if (!orderId || typeof status !== 'string' || !isOrderStatus(status)) return null
+  const rawDate = data.updatedAt ?? data.createdAt
+  const updatedAt = rawDate instanceof Timestamp
+    ? rawDate.toDate().toISOString()
+    : rawDate instanceof Date
+      ? rawDate.toISOString()
+      : typeof rawDate === 'string' && Number.isFinite(Date.parse(rawDate))
+        ? new Date(rawDate).toISOString()
+        : ''
+  if (!updatedAt) return null
+  return { id, orderId, status, updatedAt }
+}
+
 function App() {
   const [screen, setScreen] = useState<Screen>('email')
   const [profile, setProfile] = useState<EmployeeProfile>(blankProfile)
@@ -162,6 +183,15 @@ function App() {
   const [basketDefinitions, setBasketDefinitions] = useState(defaultBasketDefinitions)
   const [basketSelectionSettings, setBasketSelectionSettings] = useState(defaultBasketSelectionSettings)
   const [orders, setOrders] = useState<Order[]>([])
+  const [notificationFeed, setNotificationFeed] = useState<{
+    uid: string
+    mode: 'admin' | 'employee'
+    items: AppNotification[]
+  }>({
+    uid: '',
+    mode: 'employee',
+    items: [],
+  })
   const [organizationOptions, setOrganizationOptions] = useState<OrganizationOptions>(defaultOrganizationOptions)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -188,6 +218,12 @@ function App() {
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [currentYear] = useState(() => new Date().getFullYear())
+  const canReadNotifications = isAdmin || isEmployee
+  const useAdminNotificationFeed = isAdmin && (!isEmployee || screen === 'admin')
+  const notificationMode = useAdminNotificationFeed ? 'admin' : 'employee'
+  const notifications = notificationFeed.uid === authUser?.uid && notificationFeed.mode === notificationMode
+    ? notificationFeed.items
+    : []
   const identityReady = !authUser || resolvedIdentityUid === authUser.uid
   const screenRef = useRef(screen)
   const selectedOrderIdRef = useRef(selectedOrderId)
@@ -561,6 +597,25 @@ function App() {
       unsubscribeOrders()
     }
   }, [isEmployee, authUser, email, profile.email])
+
+  useEffect(() => {
+    if (!authUser || !firestore || !canReadNotifications) return
+    const notificationCollection = collection(firestore, 'order_notifications')
+    const notificationsQuery = useAdminNotificationFeed
+      ? query(notificationCollection, orderBy('updatedAt', 'desc'), limit(15))
+      : query(notificationCollection, where('uid', '==', authUser.uid))
+    return onSnapshot(notificationsQuery, (snapshot) => {
+      const latestNotifications = snapshot.docs.flatMap((item) => {
+        const notification = parseNotification(item.id, item.data())
+        if (!notification) console.error(`Skipping malformed notification ${item.id}.`)
+        return notification ? [notification] : []
+      }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 15)
+      setNotificationFeed({ uid: authUser.uid, mode: notificationMode, items: latestNotifications })
+    }, (error) => {
+      console.error('Unable to load notification updates.', error)
+      setNotice(firebaseErrorMessage(error))
+    })
+  }, [authUser, canReadNotifications, notificationMode, useAdminNotificationFeed])
 
   useEffect(() => {
     if (!notice) return
@@ -1145,6 +1200,7 @@ function App() {
   }
 
   return <AppLayout
+    key={authUser?.uid ?? 'signed-out'}
     screen={screen}
     setScreen={setScreen}
     profile={profile}
@@ -1161,6 +1217,7 @@ function App() {
     totalBaskets={totalBaskets}
     selectedProducts={selectedProducts}
     employeeOrders={employeeOrders}
+    notifications={notifications}
     onOrganizationOptionsChange={setOrganizationOptions}
     loginProps={{
       hasSession: Boolean(authUser),

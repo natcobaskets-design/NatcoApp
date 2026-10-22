@@ -13,11 +13,32 @@ import {
 } from './EmployeeScreens'
 import {
   defaultOrganizationOptions, orderStatusLabels, type CatalogProduct, type EmployeeProfile, type Order,
-  type OrganizationOptions, type Screen,
+  type OrderStatus, type OrganizationOptions, type Screen,
 } from './domain'
 
 export type PageTitle = { eyebrow: string; title: string; description: string }
 export type Stage = { title: string; active: boolean; done: boolean }
+export type AppNotification = {
+  id: string
+  orderId: string
+  status: OrderStatus
+  updatedAt: string
+}
+
+function loadReadNotificationKeys(uid?: string): Set<string> {
+  if (!uid) return new Set()
+  try {
+    const saved = localStorage.getItem(`natco.notifications.read.${uid}`)
+    if (!saved) return new Set()
+    const parsed: unknown = JSON.parse(saved)
+    return Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')
+      ? new Set(parsed.slice(-100))
+      : new Set()
+  } catch (error) {
+    console.warn('Unable to restore notification read state.', error)
+    return new Set()
+  }
+}
 
 const mainTitles: Partial<Record<Screen, PageTitle>> = {
   admin: { eyebrow: 'إدارة مركزية', title: 'لوحة المشرف', description: 'تابع طلبات الموظفين وأدر صور المنتجات والصلاحيات.' },
@@ -45,6 +66,7 @@ type AppLayoutProps = {
   totalBaskets: number
   selectedProducts: number
   employeeOrders: Order[]
+  notifications: AppNotification[]
   loginProps: LoginProps
   profileProps: ProfileFormProps
   basketProps: BasketSelectionProps
@@ -61,7 +83,14 @@ export function AppLayout(props: AppLayoutProps) {
     notice, setNotice, totalBaskets, selectedProducts, employeeOrders } = props
   const reduceMotion = useReducedMotion()
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [focusedOrderId, setFocusedOrderId] = useState('')
+  const [notificationNavigationRevision, setNotificationNavigationRevision] = useState(0)
+  const [readNotificationKeys, setReadNotificationKeys] = useState<Set<string>>(
+    () => loadReadNotificationKeys(authUser?.uid),
+  )
   const accountMenuRef = useRef<HTMLDivElement>(null)
+  const notificationsRef = useRef<HTMLDivElement>(null)
   const accountName = isEmployee && profile.name
     ? profile.name
     : authUser?.displayName || authUser?.email?.split('@')[0] || 'الحساب'
@@ -75,15 +104,27 @@ export function AppLayout(props: AppLayoutProps) {
     props.receiptProps.onHistory()
     setScreen('orders')
   }
+
+  const notificationKey = (notification: AppNotification) =>
+    `${authUser?.uid ?? 'anonymous'}:${notification.id}:${notification.updatedAt}`
+  const showAdminNotifications = isAdmin && (!isEmployee || screen === 'admin')
+  const unreadCount = props.notifications.filter(
+    (notification) => !readNotificationKeys.has(notificationKey(notification)),
+  ).length
+
   useEffect(() => {
-    if (!accountMenuOpen) return
+    if (!accountMenuOpen && !notificationsOpen) return
     function closeOnOutsideClick(event: MouseEvent) {
-      if (event.target instanceof Node && !accountMenuRef.current?.contains(event.target)) {
-        setAccountMenuOpen(false)
+      if (event.target instanceof Node) {
+        if (!accountMenuRef.current?.contains(event.target)) setAccountMenuOpen(false)
+        if (!notificationsRef.current?.contains(event.target)) setNotificationsOpen(false)
       }
     }
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') setAccountMenuOpen(false)
+      if (event.key === 'Escape') {
+        setAccountMenuOpen(false)
+        setNotificationsOpen(false)
+      }
     }
     document.addEventListener('mousedown', closeOnOutsideClick)
     document.addEventListener('keydown', closeOnEscape)
@@ -91,7 +132,41 @@ export function AppLayout(props: AppLayoutProps) {
       document.removeEventListener('mousedown', closeOnOutsideClick)
       document.removeEventListener('keydown', closeOnEscape)
     }
-  }, [accountMenuOpen])
+  }, [accountMenuOpen, notificationsOpen])
+
+  function markNotificationsRead(notifications: AppNotification[]) {
+    if (!authUser) return
+    setReadNotificationKeys((current) => {
+      const next = new Set([...current, ...notifications.map(notificationKey)].values())
+      const bounded = new Set([...next].slice(-100))
+      try {
+        localStorage.setItem(
+          `natco.notifications.read.${authUser.uid}`,
+          JSON.stringify([...bounded]),
+        )
+      } catch (error) {
+        console.warn('Unable to save notification read state.', error)
+      }
+      return bounded
+    })
+  }
+
+  function openNotification(notification: AppNotification) {
+    markNotificationsRead([notification])
+    setNotificationsOpen(false)
+    if (showAdminNotifications) {
+      setFocusedOrderId(notification.orderId)
+      setNotificationNavigationRevision((revision) => revision + 1)
+      setScreen('admin')
+      return
+    }
+    const order = employeeOrders.find((item) => item.id === notification.orderId)
+    if (order) props.receiptProps.onSelect(order)
+    else {
+      setScreen('orders')
+      setNotice('تعذر تحميل تفاصيل هذا الطلب الآن. حدّث سجل الطلبات ثم حاول مجدداً.')
+    }
+  }
 
   function switchWorkspace() {
     setAccountMenuOpen(false)
@@ -152,7 +227,64 @@ export function AppLayout(props: AppLayoutProps) {
         <div className="breadcrumb"><span>بوابة الموظفين</span><i>/</i><b>{screen === 'email' ? 'الرئيسية' : mainTitles[screen]?.title}</b></div>
         <div className="topbar-actions">
           <span className="topbar-season"><span className="season-dot" /> برنامج السلال الدوري</span>
-          <button className="notification-button" aria-label="التنبيهات" onClick={() => setNotice('لا توجد تنبيهات جديدة.')}><Bell size={19} /><span /></button>
+          {authUser && (isAdmin || isEmployee) && <div className="notification-wrap" ref={notificationsRef}>
+            <button
+              className="notification-button"
+              type="button"
+              aria-label={unreadCount ? `الإشعارات، ${unreadCount} غير مقروءة` : 'الإشعارات'}
+              aria-haspopup="dialog"
+              aria-expanded={notificationsOpen}
+              onClick={() => {
+                const nextOpen = !notificationsOpen
+                setNotificationsOpen(nextOpen)
+                if (nextOpen) markNotificationsRead(props.notifications)
+              }}
+            >
+              <Bell size={19} />
+              {unreadCount > 0 && <span className="notification-count">{unreadCount > 9 ? '٩+' : unreadCount.toLocaleString('ar')}</span>}
+            </button>
+            {notificationsOpen && <motion.div
+              className="notification-panel"
+              role="dialog"
+              aria-label="آخر الإشعارات"
+              initial={reduceMotion ? false : { opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: reduceMotion ? 0 : 0.16 }}
+            >
+              <div className="notification-panel-heading">
+                <div><strong>الإشعارات</strong><small>{showAdminNotifications ? 'مستجدات الطلبات' : 'تحديثات طلباتك'}</small></div>
+                {unreadCount > 0 && <button type="button" onClick={() => markNotificationsRead(props.notifications)}>تمت القراءة</button>}
+              </div>
+              {props.notifications.length === 0
+                ? <div className="notification-empty"><Bell size={20} /><span>لا توجد إشعارات حتى الآن.</span></div>
+                : <div className="notification-list">
+                  {props.notifications.map((notification) => {
+                    const order = employeeOrders.find((item) => item.id === notification.orderId)
+                    const reference = order?.reference ?? `NATCO-${notification.orderId.slice(-6).toUpperCase()}`
+                    const isReceived = notification.status === 'received'
+                    const title = showAdminNotifications
+                      ? isReceived ? 'طلب جديد أو تعديل من الموظف' : 'تحديث حالة طلب'
+                      : isReceived ? 'تم استلام طلبك' : 'تحديث حالة طلبك'
+                    const message = showAdminNotifications
+                      ? `${reference} · ${isReceived ? 'بانتظار المراجعة' : orderStatusLabels[notification.status]}`
+                      : `${reference} · ${orderStatusLabels[notification.status]}`
+                    return <button
+                      type="button"
+                      className="notification-item"
+                      key={notificationKey(notification)}
+                      onClick={() => openNotification(notification)}
+                    >
+                      <span className={`notification-item-icon status-${notification.status}`}><ClipboardList size={16} /></span>
+                      <span className="notification-item-copy">
+                        <strong>{title}</strong><small>{message}</small>
+                        <time>{new Intl.DateTimeFormat('ar-YE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(notification.updatedAt))}</time>
+                      </span>
+                      <ChevronDown className="notification-item-arrow" size={15} />
+                    </button>
+                  })}
+                </div>}
+            </motion.div>}
+          </div>}
           {authUser && <div className="account-menu-wrap" ref={accountMenuRef}>
             <button
               className="account-menu-trigger"
@@ -244,7 +376,9 @@ export function AppLayout(props: AppLayoutProps) {
             showHistory={screen === 'orders'}
           />}
           {screen === 'admin' && isAdmin && authUser && <AdminConsole
+            key={notificationNavigationRevision}
             user={authUser}
+            focusOrderId={focusedOrderId}
             onNotice={setNotice}
             onOrganizationOptionsChange={props.onOrganizationOptionsChange}
             organizationOptions={props.profileProps.organizationOptions ?? defaultOrganizationOptions}
