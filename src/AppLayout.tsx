@@ -6,6 +6,7 @@ import {
   Pencil, Settings, ShieldCheck, ShoppingBasket, UserRound, X,
 } from 'lucide-react'
 import { AdminConsole } from './AdminConsole'
+import { enablePushSubscription, hasSavedPushSubscription } from './pushNotifications'
 import {
   BasketCustomization, BasketSelection, Brand, EmployeeProfileForm, LoginPanel, ReceiptView,
   type BasketSelectionProps, type CustomizationProps, type LoginProps, type ProfileFormProps,
@@ -26,6 +27,10 @@ export type AppNotification = {
 }
 
 type NotificationPopup = { key: string; notification: AppNotification }
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
+}
 
 let notificationAudioContext: AudioContext | null = null
 
@@ -103,6 +108,7 @@ type AppLayoutProps = {
   notice: string
   setNotice: (notice: string) => void
   notificationsLoaded: boolean
+  notificationOrderId: string
   totalBaskets: number
   selectedProducts: number
   employeeOrders: Order[]
@@ -136,10 +142,19 @@ export function AppLayout(props: AppLayoutProps) {
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>(
     () => typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
   )
+  const [pushEnabled, setPushEnabled] = useState(
+    () => authUser ? hasSavedPushSubscription(authUser.uid) : false,
+  )
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null)
   const accountMenuRef = useRef<HTMLDivElement>(null)
   const notificationsRef = useRef<HTMLDivElement>(null)
   const seenNotificationsRef = useRef<{ mode: string; keys: Set<string> } | null>(null)
   const popupTimeoutRef = useRef<number | null>(null)
+  const notificationPermissionGranted = notificationPermission === 'granted'
+  const isIosDevice = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent)
+  const isStandalone = typeof window !== 'undefined' &&
+    (window.matchMedia('(display-mode: standalone)').matches ||
+      ('standalone' in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone)))
   const accountName = isEmployee && profile.name
     ? profile.name
     : authUser?.displayName || authUser?.email?.split('@')[0] || 'الحساب'
@@ -188,6 +203,22 @@ export function AppLayout(props: AppLayoutProps) {
       document.removeEventListener('keydown', closeOnEscape)
     }
   }, [accountMenuOpen, notificationsOpen])
+
+  useEffect(() => {
+    function handleInstallPrompt(event: Event) {
+      event.preventDefault()
+      setInstallPrompt(event as InstallPromptEvent)
+    }
+    function handleAppInstalled() {
+      setInstallPrompt(null)
+    }
+    window.addEventListener('beforeinstallprompt', handleInstallPrompt)
+    window.addEventListener('appinstalled', handleAppInstalled)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleInstallPrompt)
+      window.removeEventListener('appinstalled', handleAppInstalled)
+    }
+  }, [])
 
   useEffect(() => {
     if (!authUser || !props.notificationsLoaded) {
@@ -283,17 +314,36 @@ export function AppLayout(props: AppLayoutProps) {
       return
     }
     try {
-      const permission = await Notification.requestPermission()
+      const permission = notificationPermissionGranted
+        ? notificationPermission
+        : await Notification.requestPermission()
       setNotificationPermission(permission)
       if (permission === 'granted') {
+        if (!authUser) return
+        await enablePushSubscription(authUser)
+        setPushEnabled(true)
         await playNotificationSound()
-        setNotice('تم تفعيل إشعارات المتصفح والصوت. يلزم إبقاء التطبيق مفتوحاً لاستقبال التحديثات.')
+        setNotice('تم تفعيل الإشعارات على هذا الجهاز. ستصل تحديثات الطلبات حتى عند إغلاق التطبيق.')
       } else {
         setNotice('لم يتم منح إذن إشعارات الجهاز. يمكنك تغييره من إعدادات المتصفح.')
       }
     } catch (error) {
       console.error('Unable to request browser notification permission.', error)
-      setNotice('تعذر طلب إذن الإشعارات من المتصفح. تحقق من إعدادات الموقع وحاول مجدداً.')
+      setNotice(error instanceof Error
+        ? error.message
+        : 'تعذر تفعيل إشعارات الجهاز. تحقق من إعدادات الموقع وحاول مجدداً.')
+    }
+  }
+
+  async function installApplication() {
+    if (!installPrompt) return
+    try {
+      await installPrompt.prompt()
+      await installPrompt.userChoice
+      setInstallPrompt(null)
+    } catch (error) {
+      console.error('Unable to show the Natco app installation prompt.', error)
+      setNotice('تعذر فتح نافذة التثبيت. استخدم قائمة المتصفح لإضافة التطبيق إلى الشاشة الرئيسية.')
     }
   }
 
@@ -449,12 +499,19 @@ export function AppLayout(props: AppLayoutProps) {
                 </div>
               </div>
               <div className="notification-settings">
-                {notificationPermission === 'default' && <button type="button" onClick={() => void enablePhoneNotifications()}>تفعيل إشعارات الجهاز</button>}
-                {notificationPermission === 'granted' && <span><Check size={13} /> إذن إشعارات المتصفح مفعّل</span>}
+                {notificationPermission === 'default' && <button type="button" onClick={() => void enablePhoneNotifications()}>تفعيل Push على هذا الجهاز</button>}
+                {notificationPermission === 'granted' && <span><Check size={13} /> {pushEnabled ? 'Push مفعّل على هذا الجهاز' : 'إذن المتصفح مفعّل'}</span>}
                 {notificationPermission === 'denied' && <span>إذن إشعارات الجهاز مرفوض؛ فعّله من إعدادات المتصفح.</span>}
                 {notificationPermission === 'unsupported' && <span>إشعارات النظام غير مدعومة في هذا المتصفح.</span>}
+                {notificationPermissionGranted && !pushEnabled && <button type="button" onClick={() => void enablePhoneNotifications()}>إكمال تفعيل Push</button>}
                 <button type="button" onClick={() => void playNotificationSound().catch(() => setNotice('تعذر تشغيل الصوت؛ تحقق من إعدادات الصوت في الجهاز.'))}>اختبار الصوت</button>
               </div>
+              {isIosDevice && !isStandalone && <div className="notification-pwa-hint">على iPhone أو iPad: أضف التطبيق إلى الشاشة الرئيسية أولاً، ثم افتحه منها لتفعيل Push.</div>}
+              {(installPrompt || (isIosDevice && !isStandalone)) && <div className="notification-install">
+                {installPrompt
+                  ? <button type="button" onClick={() => void installApplication()}>تثبيت تطبيق ناتكو</button>
+                  : <span>من قائمة المشاركة في Safari اختر «إضافة إلى الشاشة الرئيسية».</span>}
+              </div>}
               {visibleNotifications.length === 0
                 ? <div className="notification-empty"><Bell size={20} /><span>لا توجد إشعارات حتى الآن.</span></div>
                 : <div className="notification-list">
@@ -585,7 +642,7 @@ export function AppLayout(props: AppLayoutProps) {
           {screen === 'admin' && isAdmin && authUser && <AdminConsole
             key={notificationNavigationRevision}
             user={authUser}
-            focusOrderId={focusedOrderId}
+            focusOrderId={focusedOrderId || props.notificationOrderId}
             onNotice={setNotice}
             onOrganizationOptionsChange={props.onOrganizationOptionsChange}
             organizationOptions={props.profileProps.organizationOptions ?? defaultOrganizationOptions}

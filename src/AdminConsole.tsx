@@ -190,6 +190,11 @@ export function AdminConsole({ user, focusOrderId, onNotice, onOrganizationOptio
         behavior: 'smooth',
         block: 'center',
       })
+      if (new URL(window.location.href).searchParams.has('notificationOrderId')) {
+        const url = new URL(window.location.href)
+        url.searchParams.delete('notificationOrderId')
+        window.history.replaceState({}, '', url)
+      }
     })
     return () => window.cancelAnimationFrame(frame)
   }, [focusOrderId, loading, orders])

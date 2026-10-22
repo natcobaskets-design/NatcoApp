@@ -17,7 +17,7 @@ export const missingFirebaseSettings = Object.entries(config)
   .map(([key]) => `VITE_FIREBASE_${key.replace(/[A-Z]/g, (letter) => `_${letter}`).toUpperCase()}`)
 
 export const firebaseConfigured = missingFirebaseSettings.length === 0
-const firebaseApp = firebaseConfigured
+export const firebaseApp = firebaseConfigured
   ? getApps()[0] ?? initializeApp(config)
   : null
 

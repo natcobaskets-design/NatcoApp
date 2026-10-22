@@ -9,6 +9,7 @@ import {
   writeBatch, setDoc, where,
 } from 'firebase/firestore'
 import { AppLayout, type AppNotification } from './AppLayout'
+import { disablePushSubscription } from './pushNotifications'
 import { createEmployeeSignupAccount, firebaseAuth, firebaseConfigured, firebaseErrorMessage, firebaseProjectId, firestore } from './firebase'
 import {
   blankProfile, parseCatalogProduct, parseOrder, parseProfile, productAgentPrice,
@@ -177,6 +178,9 @@ function parseNotification(id: string, data: Record<string, unknown>): AppNotifi
 
 function App() {
   const [screen, setScreen] = useState<Screen>('email')
+  const [notificationOrderId, setNotificationOrderId] = useState(
+    () => new URLSearchParams(window.location.search).get('notificationOrderId') ?? '',
+  )
   const [profile, setProfile] = useState<EmployeeProfile>(blankProfile)
   const [assignedCompany, setAssignedCompany] = useState('')
   const [products, setProducts] = useState<CatalogProduct[]>([])
@@ -631,6 +635,24 @@ function App() {
     const timeout = window.setTimeout(() => setNotice(''), 3800)
     return () => window.clearTimeout(timeout)
   }, [notice])
+
+  useEffect(() => {
+    if (!notificationOrderId || !authUser || !identityReady) return
+    if (isAdmin) {
+      setScreen('admin')
+      return
+    }
+    if (!isEmployee) return
+    const order = orders.find((item) => item.id === notificationOrderId)
+    if (!order) return
+    setActiveOrder(order)
+    setSelectedOrderId(order.id)
+    setScreen('receipt')
+    const url = new URL(window.location.href)
+    url.searchParams.delete('notificationOrderId')
+    window.history.replaceState({}, '', url)
+    setNotificationOrderId('')
+  }, [authUser, identityReady, isAdmin, isEmployee, notificationOrderId, orders])
 
   const totalBaskets = Object.values(counts).reduce((total, amount) => total + amount, 0)
   const selectedProducts = Object.values(quantities).filter((amount) => amount > 0).length
@@ -1177,6 +1199,7 @@ function App() {
   }
 
   async function logOut() {
+    if (authUser) await disablePushSubscription(authUser.uid)
     if (firebaseAuth) {
       try {
         await signOut(firebaseAuth)
@@ -1228,6 +1251,7 @@ function App() {
     employeeOrders={employeeOrders}
     notifications={notifications}
     notificationsLoaded={notificationsLoaded}
+    notificationOrderId={notificationOrderId}
     onOrganizationOptionsChange={setOrganizationOptions}
     loginProps={{
       hasSession: Boolean(authUser),

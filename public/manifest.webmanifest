@@ -1,0 +1,22 @@
+{
+  "id": "./",
+  "name": "السلال الغذائية | ناتكو الاستهلاكية",
+  "short_name": "سلال ناتكو",
+  "description": "بوابة ناتكو الاستهلاكية لطلب السلال الغذائية ومتابعة طلبات الموظفين.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f8fafc",
+  "theme_color": "#162766",
+  "icons": [
+    {
+      "src": "./natco-logo.jpg",
+      "sizes": "any",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}

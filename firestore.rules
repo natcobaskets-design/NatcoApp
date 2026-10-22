@@ -635,6 +635,36 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /push_tokens/{tokenId} {
+      allow get: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow list: if isAdmin();
+      allow create: if signedIn()
+        && (isAdmin() || isApprovedEmployee())
+        && tokenId.matches('^[a-f0-9]{64}$')
+        && request.resource.data.keys().hasAll(['uid', 'token', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['uid', 'token', 'updatedAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.token is string
+        && request.resource.data.token.size() >= 100
+        && request.resource.data.token.size() <= 4096
+        && request.resource.data.updatedAt == request.time;
+      allow update: if signedIn()
+        && (isAdmin() || isApprovedEmployee())
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasAll(['uid', 'token', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['uid', 'token', 'updatedAt'])
+        && request.resource.data.token is string
+        && request.resource.data.token.size() >= 100
+        && request.resource.data.token.size() <= 4096
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if isAdmin()
+        || (signedIn()
+          && isApprovedEmployee()
+          && resource.data.uid == request.auth.uid);
+    }
+
     match /employee_sync_queue/{email} {
       allow get, list: if isAdmin();
       allow create: if isAdmin()

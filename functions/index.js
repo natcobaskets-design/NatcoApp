@@ -1,8 +1,10 @@
 const crypto = require('node:crypto')
 const { initializeApp } = require('firebase-admin/app')
 const { getAuth } = require('firebase-admin/auth')
-const { FieldValue, getFirestore } = require('firebase-admin/firestore')
+const { FieldValue, Timestamp, getFirestore } = require('firebase-admin/firestore')
+const { getMessaging } = require('firebase-admin/messaging')
 const { defineSecret } = require('firebase-functions/params')
+const { onDocumentWritten } = require('firebase-functions/v2/firestore')
 const { HttpsError, onCall } = require('firebase-functions/v2/https')
 
 initializeApp()
@@ -12,6 +14,194 @@ const webApiKey = defineSecret('FIREBASE_WEB_API_KEY')
 const loginWindowMs = 15 * 60 * 1000
 const loginIpLimit = 30
 const loginIdentifierLimit = 10
+const natcoAppUrl = 'https://natcobaskets-design.github.io/NatcoApp/'
+const notificationStatusLabels = {
+  received: 'تم استلام الطلب',
+  preparing: 'جارٍ تجهيز الطلب',
+  ready: 'الطلب جاهز للاستلام',
+  fulfilled: 'تم تسليم الطلب',
+  cancelled: 'تم إلغاء الطلب',
+  deleted: 'تم حذف الطلب',
+}
+
+function timestampMillis(value) {
+  return value && typeof value.toMillis === 'function' ? value.toMillis() : 0
+}
+
+function pushNotificationUrl(orderId) {
+  const url = new URL(natcoAppUrl)
+  url.searchParams.set('notificationOrderId', orderId)
+  return url.toString()
+}
+
+async function claimPushDelivery(eventId, notification) {
+  const ref = database.collection('push_delivery_events').doc(hash(eventId))
+  return database.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref)
+    if (snapshot.exists && snapshot.data().status === 'sent') return null
+    if (snapshot.exists && snapshot.data().status === 'processing' &&
+      timestampMillis(snapshot.data().leaseUntil) > Date.now()) return null
+
+    const attempts = Number(snapshot.data()?.attempts || 0) + 1
+    transaction.set(ref, {
+      orderId: notification.orderId,
+      status: 'processing',
+      attempts,
+      leaseUntil: Timestamp.fromMillis(Date.now() + 5 * 60 * 1000),
+      updatedAt: FieldValue.serverTimestamp(),
+    })
+    return ref
+  })
+}
+
+async function sendPushToUser(uid, orderId, status, isAdminRecipient) {
+  const tokens = await database.collection('push_tokens').where('uid', '==', uid).get()
+  if (tokens.empty) return { sent: 0, failed: 0 }
+
+  const label = notificationStatusLabels[status] || 'تحديث جديد للطلب'
+  const title = isAdminRecipient
+    ? status === 'received' ? 'طلب جديد في ناتكو' : 'تحديث حالة طلب'
+    : 'تحديث طلبك من ناتكو'
+  const body = isAdminRecipient && status === 'received'
+    ? 'وصل طلب جديد أو تعديل من أحد الموظفين.'
+    : label
+  const link = pushNotificationUrl(orderId)
+  let sent = 0
+  let failed = 0
+
+  for (let offset = 0; offset < tokens.docs.length; offset += 500) {
+    const tokenDocs = tokens.docs.slice(offset, offset + 500)
+    const response = await getMessaging().sendEachForMulticast({
+      tokens: tokenDocs.map((item) => item.data().token),
+      data: {
+        title,
+        body,
+        orderId,
+        status,
+        url: link,
+        tag: `natco-${orderId}`,
+      },
+      webpush: {
+        fcmOptions: { link },
+      },
+    })
+
+    const invalidTokenRefs = []
+    let transientFailures = 0
+    response.responses.forEach((result, index) => {
+      if (result.success) {
+        sent += 1
+        return
+      }
+      failed += 1
+      const code = result.error?.code || ''
+      if (code === 'messaging/registration-token-not-registered' ||
+        code === 'messaging/invalid-registration-token') {
+        invalidTokenRefs.push(tokenDocs[index].ref)
+      } else {
+        transientFailures += 1
+      }
+    })
+
+    for (let index = 0; index < invalidTokenRefs.length; index += 500) {
+      const batch = database.batch()
+      invalidTokenRefs.slice(index, index + 500).forEach((ref) => batch.delete(ref))
+      await batch.commit()
+    }
+
+    if (transientFailures === response.responses.length) {
+      throw new Error('All push delivery attempts failed transiently.')
+    }
+  }
+
+  return { sent, failed }
+}
+
+exports.sendNatcoOrderPushNotifications = onDocumentWritten(
+  {
+    document: 'order_notifications/{orderId}',
+    retry: true,
+    maxInstances: 10,
+  },
+  async (event) => {
+    const before = event.data?.before
+    const after = event.data?.after
+    if (!after?.exists) return
+
+    const notification = after.data()
+    if (notification.status !== 'pending' ||
+      typeof notification.uid !== 'string' ||
+      typeof notification.eventStatus !== 'string' ||
+      !notificationStatusLabels[notification.eventStatus]) return
+
+    if (before?.exists) {
+      const previous = before.data()
+      const sameEvent = previous.status === notification.status &&
+        previous.eventStatus === notification.eventStatus &&
+        timestampMillis(previous.updatedAt) === timestampMillis(notification.updatedAt)
+      if (sameEvent) return
+    }
+
+    const deliveryRef = await claimPushDelivery(event.id, notification)
+    if (!deliveryRef) return
+
+    try {
+      const [adminSnapshot, orderSnapshot] = await Promise.all([
+        database.collection('admin_users').where('active', '==', true).get(),
+        database.collection('orders').doc(event.params.orderId).get(),
+      ])
+      const adminUids = new Set(adminSnapshot.docs.map((item) => item.id))
+      const recipientUids = new Set(adminUids)
+      const order = orderSnapshot.exists ? orderSnapshot.data() : null
+      if (order?.uid === notification.uid && typeof order.email === 'string') {
+        const roster = await database.collection('employee_roster')
+          .doc(order.email.toLowerCase()).get()
+        if (roster.exists && roster.data().active === true) recipientUids.add(notification.uid)
+      }
+      let sent = 0
+      let failed = 0
+
+      for (const uid of recipientUids) {
+        const result = await sendPushToUser(
+          uid,
+          event.params.orderId,
+          notification.eventStatus,
+          adminUids.has(uid),
+        )
+        sent += result.sent
+        failed += result.failed
+      }
+
+      await deliveryRef.update({
+        status: 'sent',
+        sent,
+        failed,
+        leaseUntil: FieldValue.delete(),
+        sentAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      })
+      if (sent === 0) {
+        console.info('Order push event had no registered devices.', {
+          orderId: event.params.orderId,
+          eventId: event.id,
+        })
+      }
+    } catch (error) {
+      await deliveryRef.update({
+        status: 'failed',
+        leaseUntil: FieldValue.delete(),
+        error: error instanceof Error ? error.message.slice(0, 500) : 'Unknown push failure.',
+        updatedAt: FieldValue.serverTimestamp(),
+      })
+      console.error('Unable to send the Natco order push notification.', {
+        orderId: event.params.orderId,
+        eventId: event.id,
+        error,
+      })
+      throw error
+    }
+  },
+)
 
 function hash(value) {
   return crypto.createHash('sha256').update(value).digest('hex')

@@ -54,6 +54,9 @@
 .notification-settings > span { display: flex; align-items: center; gap: 5px; }
 .notification-settings > span svg { color: #27936b; }
 .notification-settings > button { padding: 6px 8px; border: 1px solid #e7eaf1; border-radius: 7px; color: var(--navy); background: #fff; font-size: 9px; }
+.notification-pwa-hint,.notification-install { padding: 8px 12px; border-bottom: 1px solid #f0f1f5; color: #727b90; font-size: 9px; line-height: 1.65; }
+.notification-install { display: flex; justify-content: flex-start; }
+.notification-install button { padding: 6px 9px; border: 0; border-radius: 7px; color: #fff; background: var(--navy); font-size: 9px; }
 .notification-list { max-height: min(390px, calc(100dvh - 130px)); overflow-y: auto; }
 .notification-row { display: flex; align-items: center; border-bottom: 1px solid #f1f2f5; }
 .notification-row:last-child { border-bottom: 0; }
