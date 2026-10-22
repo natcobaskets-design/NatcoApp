@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import type { User } from 'firebase/auth'
 import {
-  Bell, Check, ChevronDown, CircleHelp, ClipboardList, Gift, Home, LogOut, Package,
+  Bell, Check, ChevronDown, CircleHelp, ClipboardList, Download, Gift, Home, LogOut, Package,
   Pencil, Settings, ShieldCheck, ShoppingBasket, UserRound, X,
 } from 'lucide-react'
 import { AdminConsole } from './AdminConsole'
@@ -151,6 +151,7 @@ export function AppLayout(props: AppLayoutProps) {
   const seenNotificationsRef = useRef<{ mode: string; keys: Set<string> } | null>(null)
   const popupTimeoutRef = useRef<number | null>(null)
   const notificationPermissionGranted = notificationPermission === 'granted'
+  const isAndroidDevice = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
   const isIosDevice = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent)
   const isStandalone = typeof window !== 'undefined' &&
     (window.matchMedia('(display-mode: standalone)').matches ||
@@ -335,7 +336,10 @@ export function AppLayout(props: AppLayoutProps) {
   }
 
   async function installApplication() {
-    if (!installPrompt) return
+    if (!installPrompt) {
+      setNotice('لتثبيت التطبيق على Android، افتح قائمة Chrome ⋮ ثم اختر «تثبيت التطبيق» أو «إضافة إلى الشاشة الرئيسية».')
+      return
+    }
     try {
       await installPrompt.prompt()
       await installPrompt.userChoice
@@ -433,6 +437,11 @@ export function AppLayout(props: AppLayoutProps) {
         <div className="breadcrumb"><span>بوابة الموظفين</span><i>/</i><b>{screen === 'email' ? 'الرئيسية' : mainTitles[screen]?.title}</b></div>
         <div className="topbar-actions">
           <span className="topbar-season"><span className="season-dot" /> برنامج السلال الدوري</span>
+          {isAndroidDevice && !isStandalone && <button
+            className="pwa-install-action"
+            type="button"
+            onClick={() => void installApplication()}
+          ><Download size={15} /><span>تثبيت التطبيق</span></button>}
           {authUser && (isAdmin || isEmployee) && <div className="notification-wrap" ref={notificationsRef}>
             <button
               className="notification-button"

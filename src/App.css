@@ -32,6 +32,8 @@
 .topbar-actions { display: flex; align-items: center; gap: 19px; }
 .topbar-season { display: flex; align-items: center; gap: 7px; color: #71798e; font-size: 10px; }
 .season-dot { width: 6px; height: 6px; border-radius: 50%; background: #39a878; box-shadow: 0 0 0 3px #39a8781d; }
+.pwa-install-action { display: inline-flex; align-items: center; gap: 6px; padding: 8px 11px; border: 1px solid #f2a15c; border-radius: 9px; color: #a9500b; background: #fff8f1; font-size: 10px; font-weight: 650; white-space: nowrap; }
+.pwa-install-action:hover { background: #fff0df; }
 .notification-wrap { position: relative; }
 .notification-button { position: relative; width: 35px; height: 35px; padding: 7px; display: grid; place-items: center; background: transparent; color: #71798e; border: 0; border-radius: 9px; }
 .notification-button:hover,.notification-button[aria-expanded="true"] { color: var(--navy); background: #f5f6fa; }
@@ -377,6 +379,8 @@
   .breadcrumb { display: none; }
   .topbar-actions { gap: 12px; }
   .topbar-season { display: none; }
+  .pwa-install-action { gap: 4px; padding: 7px 8px; font-size: 9px; }
+  .pwa-install-action svg { width: 13px; height: 13px; }
   .account-trigger-name { max-width: 84px; font-size: 9px; }
   .account-menu { left: 0; }
   .notification-panel { position: fixed; top: 63px; right: 12px; left: 12px; width: auto; }
