@@ -23,7 +23,12 @@ export type RosterImportRow = {
   currentMonthlySpentRaw?: string
   activeRaw?: string
 }
-export type RosterImportPreview = { rows: RosterImportRow[]; issues: string[]; totalRows: number }
+export type RosterImportPreview = {
+  rows: RosterImportRow[]
+  issues: string[]
+  totalRows: number
+  duplicatesRemoved: number
+}
 export const rosterImportLimit = 10_000
 
 function normalizedOrganizationValue(value: string): string {
@@ -204,7 +209,7 @@ export function parseRosterCsv(
   projectId = '',
 ): RosterImportPreview {
   const csvRows = parseCsvRows(content)
-  if (!csvRows.length) return { rows: [], issues: ['الملف فارغ.'], totalRows: 0 }
+  if (!csvRows.length) return { rows: [], issues: ['الملف فارغ.'], totalRows: 0, duplicatesRemoved: 0 }
   const headers = csvRows[0].map((header) => header.toLowerCase()
     .replace(/[\u064b-\u065f\u0670\u0640]/g, '')
     .replace(/[أإآ]/g, 'ا')
@@ -224,7 +229,7 @@ export function parseRosterCsv(
   const spentIndex = indexOf('currentmonthlyspent', 'الإنفاقالشهريالحالي', 'الإنفاقالحالي')
   const activeIndex = indexOf('active', 'accountstatus', 'حالةالحساب')
   if (codeIndex < 0) {
-    return { rows: [], issues: [`لم أتعرف على عمود الكود الوظيفي. الأعمدة الموجودة: ${csvRows[0].join('، ')}. استخدم employeeCode أو الرقم الوظيفي.`], totalRows: csvRows.length - 1 }
+    return { rows: [], issues: [`لم أتعرف على عمود الكود الوظيفي. الأعمدة الموجودة: ${csvRows[0].join('، ')}. استخدم employeeCode أو الرقم الوظيفي.`], totalRows: csvRows.length - 1, duplicatesRemoved: 0 }
   }
   const candidates: RosterImportRow[] = []
   const issues: string[] = []
@@ -306,5 +311,20 @@ export function parseRosterCsv(
       line,
     })
   })
-  return { rows: candidates, issues, totalRows: csvRows.length - 1 }
+  const rows: RosterImportRow[] = []
+  const seenCodes = new Set<string>()
+  const seenEmails = new Set<string>()
+  let duplicatesRemoved = 0
+  candidates.forEach((candidate) => {
+    const codeKey = candidate.employeeCode.trim().toLocaleLowerCase()
+    const emailKey = candidate.email.trim().toLocaleLowerCase()
+    if ((codeKey && seenCodes.has(codeKey)) || (emailKey && seenEmails.has(emailKey))) {
+      duplicatesRemoved += 1
+      return
+    }
+    if (codeKey) seenCodes.add(codeKey)
+    if (emailKey) seenEmails.add(emailKey)
+    rows.push(candidate)
+  })
+  return { rows, issues, totalRows: csvRows.length - 1, duplicatesRemoved }
 }

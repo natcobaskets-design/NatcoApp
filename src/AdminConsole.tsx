@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import {
-  collection, deleteField, doc, getDoc, getDocs, onSnapshot, orderBy, query,
+  collection, doc, getDoc, getDocs, onSnapshot, orderBy, query,
   runTransaction, serverTimestamp, updateDoc, where, writeBatch,
 } from 'firebase/firestore'
 import {
@@ -23,7 +23,7 @@ import {
 } from './domain'
 import { decodeRosterCsv, normalizeCsvNumber, normalizePhone, parseRosterCsv, rosterImportLimit, rosterImportRowIssues, toE164PhoneNumber, type RosterImportPreview } from './rosterImport'
 import { employeePasswordLoginEmail } from './employeeLogin'
-import { parseProductCsv, productImportLimit, type ProductImportPreview } from './productImport'
+import { parseProductCsv, productImportLimit, type ProductImportPreview, type ProductImportRow } from './productImport'
 import './AdminConsole.css'
 
 type Props = {
@@ -564,15 +564,13 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
         onNotice(`صحح بيانات الصف ${invalidRow.line}: ${rosterImportRowIssues(invalidRow, organizationOptions).join(' ')}`)
         return
       }
-      const codes = new Set<string>()
       const phones = new Set<string>()
       for (const row of rows) {
         const phoneKey = row.phone ? normalizePhone(row.phone) : ''
-        if (codes.has(row.employeeCode) || (phoneKey && phones.has(phoneKey))) {
-          onNotice(`الكود الوظيفي أو الهاتف مكرر في الصف ${row.line}. صحح البيانات قبل الاعتماد.`)
+        if (phoneKey && phones.has(phoneKey)) {
+          onNotice(`رقم الهاتف مكرر في الصف ${row.line} مع كود وظيفي مختلف؛ لا يمكن دمج سجلين مختلفين بأمان.`)
           return
         }
-        codes.add(row.employeeCode)
         if (phoneKey) phones.add(phoneKey)
       }
       const invalidFields = rows.find((row) =>
@@ -615,23 +613,29 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
             collection(database, 'employee_roster'),
             where('phoneLookup', 'in', phoneRows.map((row) => normalizePhone(row.phone ?? ''))),
           )) : null
+        const emailSnapshots = await Promise.all(chunk.map((row) =>
+          row.email ? getDoc(doc(database, 'employee_roster', row.email)) : Promise.resolve(null)))
         for (const row of chunk) {
           const codeMatch = codeMatches.docs.find((item) =>
             String(item.data().employeeCode ?? '').trim() === row.employeeCode)
           const phoneMatch = phoneMatches?.docs.find((item) =>
             String(item.data().phoneLookup ?? '') === normalizePhone(row.phone ?? ''))
-          if (codeMatch && phoneMatch && codeMatch.id !== phoneMatch.id) {
-            onNotice(`بيانات الصف ${row.line} تطابق موظفين مختلفين حسب الكود والهاتف.`)
+          const emailSnapshot = emailSnapshots.find((snapshot) => snapshot?.id === row.email)
+          const emailMatch = emailSnapshot?.exists() ? emailSnapshot : undefined
+          const matchIds = [codeMatch?.id, phoneMatch?.id, emailMatch?.id]
+            .filter((id): id is string => Boolean(id))
+          if (new Set(matchIds).size > 1) {
+            onNotice(`بيانات الصف ${row.line} تطابق سجلات موظفين مختلفة. صحح الكود أو الهاتف أو البريد قبل المتابعة.`)
             return
           }
-          const existing = codeMatch ?? phoneMatch
+          const existing = codeMatch ?? phoneMatch ?? emailMatch
           if (!existing) continue
+          const savedCode = String(existing.data().employeeCode ?? '').trim()
+          if (!codeMatch && savedCode && savedCode !== row.employeeCode) {
+            onNotice(`الكود الوظيفي في الصف ${row.line} لا يطابق سجل الموظف الموجود. صحح الكود قبل الدمج.`)
+            return
+          }
           if (!row.emailProvided) {
-            const savedCode = String(existing.data().employeeCode ?? '').trim()
-            if (!codeMatch && savedCode && savedCode !== row.employeeCode) {
-              onNotice(`الكود الوظيفي في الصف ${row.line} لا يطابق الموظف المرتبط بالهاتف. صحح الكود قبل الاعتماد.`)
-              return
-            }
             const savedPhone = String(existing.data().phoneLookup ?? normalizePhone(String(existing.data().phone ?? '')))
             if (row.phone && savedPhone && savedPhone !== normalizePhone(row.phone)) {
               onNotice(`الهاتف في الصف ${row.line} لا يطابق الموظف المرتبط بالكود ${row.employeeCode}.`)
@@ -639,25 +643,23 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
             }
             row.email = existing.id
           } else if (existing.id !== row.email) {
-            onNotice(`الكود أو الهاتف في الصف ${row.line} مرتبط بسجل آخر ${existing.id}.`)
-            return
+            row.corrections.push(`تم الاحتفاظ بسجل الموظف الحالي ${existing.id} بدلاً من إنشاء سجل مكرر.`)
+            row.email = existing.id
           }
         }
       }
-      const emails = new Set<string>()
-      const duplicateEmail = rows.find((row) => {
-        if (emails.has(row.email)) return true
-        emails.add(row.email)
-        return false
+      const importedEmails = new Set<string>()
+      const uniqueRows = rows.filter((row) => {
+        if (importedEmails.has(row.email)) return false
+        importedEmails.add(row.email)
+        return true
       })
+      const duplicateRowsRemoved = rows.length - uniqueRows.length
+      rows.splice(0, rows.length, ...uniqueRows)
       const emailMissingAfterMatching = rows.find((row) =>
         !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email))
       if (emailMissingAfterMatching) {
         onNotice(`أدخل هاتفاً دولياً أو بريداً داخلياً في الصف ${emailMissingAfterMatching.line}، أو طابقه مع سجل قائم بالكود الوظيفي.`)
-        return
-      }
-      if (duplicateEmail) {
-        onNotice(`البريد الداخلي مكرر في الصف ${duplicateEmail.line}.`)
         return
       }
       const period = currentSpendingPeriod()
@@ -694,18 +696,19 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
             phoneLookup: normalizePhone(row.phone),
           } : {}),
           ...(row.name ? { name: row.name } : {}),
-          ...(row.providedFields.includes('company') ? { company: row.company || deleteField() } : {}),
+          ...(row.company ? { company: row.company } : {}),
           ...(row.branch ? { branch: row.branch } : {}),
           ...(row.province ? { province: row.province } : {}),
           ...(row.address ? { address: row.address } : {}),
           ...(row.coordinates ? { coordinates: row.coordinates } : {}),
           ...(row.phone ? { phone: row.phone } : {}),
           ...(row.whatsapp ? { whatsapp: row.whatsapp } : {}),
-          ...(row.providedFields.includes('monthlySpendingLimit')
-            ? { monthlySpendingLimit: row.monthlySpendingLimit ?? deleteField() } : {}),
-          ...(row.providedFields.includes('currentMonthlySpent')
+          ...(row.monthlySpendingLimit !== undefined ? { monthlySpendingLimit: row.monthlySpendingLimit } : {}),
+          ...(row.currentMonthlySpentRaw?.trim()
             ? { currentMonthlySpent: row.currentMonthlySpent ?? 0, spendingPeriod: period } : {}),
-          ...(row.active !== undefined ? { active: row.active } : { active: true }),
+          ...(row.active !== undefined
+            ? { active: row.active }
+            : rosterSnapshots.find((snapshot) => snapshot.id === row.email)?.exists() ? {} : { active: true }),
           approvedBy: user.uid,
           updatedAt: serverTimestamp(),
         }, { merge: true }))
@@ -724,16 +727,15 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           batch.update(snapshot.ref, {
             employeeCode: row.employeeCode,
             ...(row.name ? { name: row.name } : {}),
-            ...(row.providedFields.includes('company') ? { company: row.company || deleteField() } : {}),
+            ...(row.company ? { company: row.company } : {}),
             ...(row.branch ? { branch: row.branch } : {}),
             ...(row.province ? { province: row.province } : {}),
             ...(row.address ? { address: row.address } : {}),
             ...(row.coordinates ? { coordinates: row.coordinates } : {}),
             ...(row.phone ? { phone: row.phone } : {}),
             ...(row.whatsapp ? { whatsapp: row.whatsapp } : {}),
-            ...(row.providedFields.includes('monthlySpendingLimit')
-              ? { monthlySpendingLimit: row.monthlySpendingLimit ?? deleteField() } : {}),
-            ...(row.providedFields.includes('currentMonthlySpent')
+            ...(row.monthlySpendingLimit !== undefined ? { monthlySpendingLimit: row.monthlySpendingLimit } : {}),
+            ...(row.currentMonthlySpentRaw?.trim()
               ? { currentMonthlySpent: row.currentMonthlySpent ?? 0, spendingPeriod: period } : {}),
           })
         })
@@ -749,7 +751,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
 
       setRosterPreview(null)
       setRosterFileName('')
-      onNotice(`تم اعتماد ${committedRows.toLocaleString('ar')} سجل موظف. أنشئ حسابات Email/Password للموظفين في Firebase Authentication، ثم فعّل ربط كل حساب من ملفه الوظيفي.`)
+      const removedDuplicateCount = rosterPreview.duplicatesRemoved + duplicateRowsRemoved
+      onNotice(`تم إضافة أو تحديث ${committedRows.toLocaleString('ar')} موظف دون حذف موظفين سابقين${removedDuplicateCount ? `، وتجاوز ${removedDuplicateCount.toLocaleString('ar')} سجلات مكررة` : ''}. أنشئ حسابات الدخول للموظفين الجدد من ملفهم الوظيفي.`)
     } catch (error) {
       console.error(`Employee roster import stopped after ${committedRows} records.`, error)
       onNotice(committedRows
@@ -896,7 +899,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     }
     try {
       const preview = parseProductCsv(
-        await file.text(),
+        decodeRosterCsv(await file.arrayBuffer()),
         organizationOptions.companies.map((company) => company.name),
       )
       setProductCsvName(file.name)
@@ -906,7 +909,7 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       else onNotice(`تمت معاينة ${preview.rows.length} منتجاً. راجع البيانات ثم اعتمد الاستيراد.`)
     } catch (error) {
       console.error('Unable to read product CSV.', error)
-      onNotice('تعذرت قراءة ملف المنتجات. استخدم ملف CSV بترميز UTF-8.')
+      onNotice('تعذرت قراءة ملف المنتجات. تحقق من ترميز CSV والفاصل بين الأعمدة.')
     }
   }
 
@@ -916,18 +919,68 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
     setWorking(true)
     let imported = 0
     try {
-      for (let offset = 0; offset < productImportPreview.rows.length; offset += 200) {
+      const existingSnapshot = await getDocs(collection(database, 'products'))
+      const existingProducts = existingSnapshot.docs.flatMap((item) => {
+        const product = parseCatalogProduct(item.id, item.data())
+        return product ? [product] : []
+      })
+      const normalizeName = (name: string) => name.trim().toLocaleLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f\u064b-\u065f\u0670\u0640]/g, '')
+        .replace(/[أإآ]/g, 'ا').replace(/[ىي]/g, 'ي').replace(/\s+/g, ' ')
+      const knownProductsByName = new Map<string, CatalogProduct[]>()
+      existingProducts.forEach((product) => {
+        const key = normalizeName(product.name)
+        knownProductsByName.set(key, [...(knownProductsByName.get(key) ?? []), product])
+      })
+      const seenRows = new Set<string>()
+      const rowsToImport: Array<{ row: ProductImportRow; id: string; exists: boolean }> = []
+      let duplicatesSkipped = 0
+      for (const row of productImportPreview.rows) {
+        const rowKeys = [`name:${normalizeName(row.name)}`, ...(row.id ? [`id:${row.id}`] : [])]
+        if (rowKeys.some((key) => seenRows.has(key))) {
+          duplicatesSkipped += 1
+          continue
+        }
+        rowKeys.forEach((key) => seenRows.add(key))
+        const idMatch = row.id ? existingProducts.filter((product) => product.id === row.id) : []
+        const matches = idMatch.length
+          ? idMatch
+          : knownProductsByName.get(normalizeName(row.name)) ?? []
+        if (matches.length > 1) {
+          onNotice(`اسم المنتج «${row.name}» موجود أكثر من مرة. حدد معرّف المنتج في CSV لتحديثه بأمان.`)
+          return
+        }
+        const matchedProduct = matches[0]
+        const id = matchedProduct?.id ?? row.id ?? doc(collection(database, 'products')).id
+        rowsToImport.push({ row, id, exists: Boolean(matchedProduct) })
+      }
+      for (let offset = 0; offset < rowsToImport.length; offset += 200) {
         const batch = writeBatch(database)
-        const chunk = productImportPreview.rows.slice(offset, offset + 200)
-        chunk.forEach((row) => {
-          const { id: importedId, ...product } = row
-          const productRef = importedId
-            ? doc(database, 'products', importedId)
-            : doc(collection(database, 'products'))
+        const chunk = rowsToImport.slice(offset, offset + 200)
+        chunk.forEach(({ row, id, exists }) => {
+          const existingProduct = existingProducts.find((product) => product.id === id)
+          const fields = new Set(row.providedFields)
+          const product = {
+            name: row.name,
+            department: row.department,
+            subcategory: row.subcategory,
+            ...(fields.has('detail') || !exists ? { detail: row.detail } : {}),
+            ...(fields.has('category') || !exists ? { category: row.category } : {}),
+            ...(fields.has('agentPrice') && row.agentPrice !== undefined ? { agentPrice: row.agentPrice } : {}),
+            ...(fields.has('companyAgentPrices') && row.companyAgentPrices
+              ? { companyAgentPrices: row.companyAgentPrices } : {}),
+            ...(fields.has('active') && row.active !== undefined ? { active: row.active } : {}),
+            ...(!exists ? { tone: row.tone, iconKey: row.iconKey } : {}),
+          }
+          if (exists && !fields.has('detail') && !existingProduct?.detail) {
+            product.detail = row.detail
+          }
+          const productRef = doc(database, 'products', id)
           batch.set(productRef, {
             ...product,
-            ...(!importedId ? { imageUrl: '', imagePath: '' } : {}),
-            createdBy: user.uid,
+            ...(!exists ? { imageUrl: '', imagePath: '' } : {}),
+            ...(exists ? {} : { createdBy: user.uid }),
+            updatedBy: user.uid,
             updatedAt: serverTimestamp(),
           }, { merge: true })
           batch.set(doc(database, 'catalog_sync_queue', productRef.id), {
@@ -943,7 +996,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
       }
       setProductImportPreview(null)
       setProductCsvName('')
-      onNotice(`تم استيراد ${imported.toLocaleString('ar')} منتجاً. أضف صورها أو حدّثها من بطاقة المنتج.`)
+      const removedDuplicateCount = duplicatesSkipped + productImportPreview.duplicatesRemoved
+      onNotice(`تم تحديث أو إضافة ${imported.toLocaleString('ar')} منتجاً دون حذف منتجات سابقة${removedDuplicateCount ? `، وتجاوز ${removedDuplicateCount.toLocaleString('ar')} صفوف مكررة` : ''}.`)
     } catch (error) {
       console.error(`Product CSV import stopped after ${imported} records.`, error)
       onNotice(imported
@@ -1038,8 +1092,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           </div>
         </div>
         {productImportPreview && <div className="roster-preview product-import-preview">
-          <div className="roster-preview-summary"><strong>معاينة {productCsvName}</strong><span>{productImportPreview.rows.length} منتج</span><span className={productImportPreview.issues.length ? 'roster-invalid-count' : ''}>{productImportPreview.issues.length} مشكلة</span></div>
-          <small className="employee-bulk-help">الحد الأقصى {productImportLimit} منتج. اترك id فارغاً للإضافة أو حدده لتحديث منتج موجود. لا يمسح الاستيراد صور المنتج الموجودة.</small>
+          <div className="roster-preview-summary"><strong>معاينة {productCsvName}</strong><span>{productImportPreview.rows.length} منتج</span><span className={productImportPreview.issues.length ? 'roster-invalid-count' : ''}>{productImportPreview.issues.length} مشكلة</span>{productImportPreview.duplicatesRemoved > 0 && <span>تم تجاهل {productImportPreview.duplicatesRemoved} معرّف مكرر</span>}</div>
+          <small className="employee-bulk-help">الحد الأقصى {productImportLimit} منتج. المنتجات ذات id مطابق تُحدّث، وإذا تُرك id فارغاً فسيُطابق اسم المنتج الموجود عند تطابقه بشكل فريد؛ وإلا يُضاف منتج جديد. الصفوف المتكررة بالاسم أو المعرّف داخل الملف تُستورد مرة واحدة. لا يحذف الاستيراد منتجات سابقة ولا يمسح صورها.</small>
           {productImportPreview.issues.length > 0 && <div className="roster-import-issues" role="alert">{productImportPreview.issues.slice(0, 6).map((item) => <small key={item}>{item}</small>)}{productImportPreview.issues.length > 6 && <small>و{productImportPreview.issues.length - 6} مشكلات أخرى. صحّح الملف ثم أعد اختياره.</small>}</div>}
           {productImportPreview.rows.length > 0 && <div className="roster-preview-list">{productImportPreview.rows.slice(0, 4).map((row, index) => <div key={`${row.id ?? 'new'}-${index}`}><span>{row.name}</span><span>{row.subcategory} · {row.agentPrice?.toLocaleString('ar') ?? 'السعر غير محدد'}</span></div>)}</div>}
           <div className="admin-product-import-actions">
@@ -1069,7 +1123,8 @@ export function AdminConsole({ user, onNotice, onOrganizationOptionsChange, orga
           </div>
           <small className="employee-bulk-help">الأعمدة المطلوبة: <b dir="ltr">employeeCode</b> و<b dir="ltr">name</b>، مع الهاتف أو البريد الداخلي. البريد اختياري؛ عند تركه فارغاً يُنشأ معرّف داخلي من الهاتف، أو يُطابق السجل القائم بالكود الوظيفي. تُصحح أسماء الشركات والفروع والمحافظات تلقائياً عند وجود تطابق فريد قريب، ويمكن تعديل كل صف قبل الاعتماد. الأعمدة الاختيارية: <b dir="ltr">company, monthlySpendingLimit, currentMonthlySpent</b>. لا تضف كلمات مرور.</small>
           {rosterPreview && <div className="roster-preview">
-            <div className="roster-preview-summary"><strong>معاينة وتعديل {rosterFileName}</strong><span>{rosterPreview.rows.length} سجل</span><span className={rosterPreview.issues.length || rosterPreview.rows.some((row) => rosterImportRowIssues(row, organizationOptions).length) ? 'roster-invalid-count' : ''}>{rosterPreview.issues.length + rosterPreview.rows.reduce((total, row) => total + rosterImportRowIssues(row, organizationOptions).length, 0)} مشكلة قابلة للمراجعة</span><span>{rosterPreview.rows.reduce((total, row) => total + row.corrections.length, 0)} تصحيح تلقائي</span></div>
+            <div className="roster-preview-summary"><strong>معاينة وتعديل {rosterFileName}</strong><span>{rosterPreview.rows.length} سجل فريد</span><span className={rosterPreview.issues.length || rosterPreview.rows.some((row) => rosterImportRowIssues(row, organizationOptions).length) ? 'roster-invalid-count' : ''}>{rosterPreview.issues.length + rosterPreview.rows.reduce((total, row) => total + rosterImportRowIssues(row, organizationOptions).length, 0)} مشكلة قابلة للمراجعة</span><span>{rosterPreview.rows.reduce((total, row) => total + row.corrections.length, 0)} تصحيح تلقائي</span>{rosterPreview.duplicatesRemoved > 0 && <span>تم تجاهل {rosterPreview.duplicatesRemoved} صف مكرر</span>}</div>
+            <small className="employee-bulk-help">الاستيراد يضيف أو يحدّث المطابق فقط؛ لا يحذف أي موظف موجود. الخلايا الفارغة لا تمسح بيانات الموظف الحالي.</small>
             {rosterPreview.issues.length > 0 && <div className="roster-import-issues" role="alert">{rosterPreview.issues.slice(0, 6).map((item) => <small key={item}>{item}</small>)}{rosterPreview.issues.length > 6 && <small>و{rosterPreview.issues.length - 6} مشكلات أخرى. صحّح الملف ثم أعد اختياره.</small>}</div>}
             {rosterPreview.rows.length > 0 && <div className="roster-import-table-wrap"><table className="roster-import-table"><thead><tr><th>الاسم</th><th>البريد الداخلي (اختياري)</th><th>الكود الوظيفي</th><th>الشركة</th><th>الفرع</th><th>المحافظة</th><th>العنوان</th><th>الهاتف</th><th>واتساب</th><th>السقف الشهري</th><th>الإنفاق الحالي</th><th>الحالة</th><th>المراجعة</th><th>إزالة</th></tr></thead><tbody>{rosterPreview.rows.map((row, index) => {
               const rowIssues = rosterImportRowIssues(row, organizationOptions)

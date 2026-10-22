@@ -100,6 +100,18 @@ export function AdminBasketManagement({ products, onNotice, userId }: Props) {
     }
     setWorking(true)
     try {
+      const normalizeName = (value: string) => value.trim().toLocaleLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f\u064b-\u065f\u0670\u0640]/g, '')
+        .replace(/[أإآ]/g, 'ا').replace(/[ىي]/g, 'ي').replace(/\s+/g, ' ')
+      const normalizedName = normalizeName(name)
+      const duplicate = baskets.find((basket) =>
+        basket.id !== editingId &&
+        basket.kind === draft.kind &&
+        normalizeName(basket.name) === normalizedName)
+      if (duplicate) {
+        onNotice(`توجد سلة من النوع نفسه باسم «${duplicate.name}». افتحها للتعديل بدلاً من إضافة نسخة مكررة.`)
+        return
+      }
       const id = editingId || `basket-${Date.now().toString(36)}`
       await setDoc(doc(firestore, 'basket_types', id), {
         ...draft,

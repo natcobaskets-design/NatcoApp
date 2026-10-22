@@ -9,11 +9,13 @@ export const productImportLimit = 1000
 export type ProductImportRow = Omit<CatalogProduct, 'id' | 'imageUrl' | 'imagePath' | 'active'> & {
   id?: string
   active?: boolean
+  providedFields: string[]
 }
 
 export type ProductImportPreview = {
   rows: ProductImportRow[]
   issues: string[]
+  duplicatesRemoved: number
 }
 
 function parseCsv(text: string, delimiter: string): string[][] {
@@ -102,16 +104,18 @@ function parseCompanyPrices(value: string, allowedCompanies?: string[]): Record<
 }
 
 export function parseProductCsv(text: string, allowedCompanies?: string[]): ProductImportPreview {
-  const normalized = text.replace(/^\uFEFF/, '')
+  const normalized = text.replace(/^\uFEFF/, '').replace(/^sep=[,;\t]\r?\n/i, '')
   const firstLine = normalized.split(/\r?\n/, 1)[0] ?? ''
-  const delimiter = (firstLine.match(/;/g)?.length ?? 0) > (firstLine.match(/,/g)?.length ?? 0) ? ';' : ','
+  const delimiters = [',', ';', '\t']
+  const delimiter = delimiters.sort((left, right) =>
+    (firstLine.split(right).length - 1) - (firstLine.split(left).length - 1))[0]
   let csvRows: string[][]
   try {
     csvRows = parseCsv(normalized, delimiter)
   } catch (error) {
-    return { rows: [], issues: [error instanceof Error ? error.message : 'تعذرت قراءة ملف CSV.'] }
+    return { rows: [], issues: [error instanceof Error ? error.message : 'تعذرت قراءة ملف CSV.'], duplicatesRemoved: 0 }
   }
-  if (csvRows.length < 2) return { rows: [], issues: ['يجب أن يحتوي الملف على صف عناوين وصف منتج واحد على الأقل.'] }
+  if (csvRows.length < 2) return { rows: [], issues: ['يجب أن يحتوي الملف على صف عناوين وصف منتج واحد على الأقل.'], duplicatesRemoved: 0 }
 
   const columns = new Map(csvRows[0].map((header, index) => [headerKey(header), index]))
   const nameColumn = getColumn(columns, 'name', 'اسم المنتج')
@@ -128,6 +132,7 @@ export function parseProductCsv(text: string, allowedCompanies?: string[]): Prod
     return {
       rows: [],
       issues: ['الأعمدة المطلوبة: name, department, subcategory. عمود detail اختياري. نزّل قالب CSV لمعرفة شكل الملف.'],
+      duplicatesRemoved: 0,
     }
   }
 
@@ -136,9 +141,10 @@ export function parseProductCsv(text: string, allowedCompanies?: string[]): Prod
   const ids = new Set<string>()
   const dataRows = csvRows.slice(1)
   if (dataRows.length > productImportLimit) {
-    return { rows: [], issues: [`الحد الأقصى للاستيراد هو ${productImportLimit} منتج في الملف الواحد.`] }
+    return { rows: [], issues: [`الحد الأقصى للاستيراد هو ${productImportLimit} منتج في الملف الواحد.`], duplicatesRemoved: 0 }
   }
 
+  let duplicatesRemoved = 0
   dataRows.forEach((row, index) => {
     const line = index + 2
     const name = cell(row, nameColumn)
@@ -165,7 +171,11 @@ export function parseProductCsv(text: string, allowedCompanies?: string[]): Prod
     if (!basketCategory) errors.push('نوع السلة يجب أن يكون essential أو family أو both')
     if (agentPrice === null) errors.push('سعر الوكيل يجب أن يكون رقماً صفراً أو أكثر')
     if (companyAgentPrices === null) errors.push('أسعار الشركات يجب أن تكون JSON صالحاً بقيم رقمية غير سالبة')
-    if (id && (!/^[A-Za-z0-9_-]{1,100}$/.test(id) || ids.has(id))) errors.push('معرّف المنتج غير صالح أو مكرر داخل الملف')
+    if (id && !/^[A-Za-z0-9_-]{1,100}$/.test(id)) errors.push('معرّف المنتج غير صالح')
+    if (id && ids.has(id)) {
+      duplicatesRemoved += 1
+      return
+    }
     if (errors.length || !department || !productDepartment || !basketCategory ||
       agentPrice === null || companyAgentPrices === null) {
       issues.push(`السطر ${line}: ${errors.join('، ')}`)
@@ -185,8 +195,15 @@ export function parseProductCsv(text: string, allowedCompanies?: string[]): Prod
       ...(active !== undefined ? { active } : {}),
       ...(agentPrice !== undefined ? { agentPrice } : {}),
       ...(companyAgentPrices ? { companyAgentPrices } : {}),
+      providedFields: [
+        ...(detailColumn >= 0 && detail ? ['detail'] : []),
+        ...(basketColumn >= 0 && cell(row, basketColumn) ? ['category'] : []),
+        ...(priceColumn >= 0 && cell(row, priceColumn) ? ['agentPrice'] : []),
+        ...(companyPricesColumn >= 0 && cell(row, companyPricesColumn) ? ['companyAgentPrices'] : []),
+        ...(activeColumn >= 0 && activeText ? ['active'] : []),
+      ],
     })
   })
 
-  return { rows, issues }
+  return { rows, issues, duplicatesRemoved }
 }
