@@ -377,9 +377,10 @@ export type ReceiptProps = {
   onShare: () => void
   onSelect: (order: Order) => void
   onHistory: () => void
+  showHistory: boolean
 }
 
-export function ReceiptView({ activeOrder, orders, products, depositInstructions, onEdit, onRequestAction, onNew, onShare, onSelect, onHistory }: ReceiptProps) {
+export function ReceiptView({ activeOrder, orders, products, depositInstructions, onEdit, onRequestAction, onNew, onShare, onSelect, onHistory, showHistory }: ReceiptProps) {
   const reduceMotion = useReducedMotion()
   const [requestMessage, setRequestMessage] = useState('')
   const [requestBusy, setRequestBusy] = useState(false)
@@ -424,13 +425,13 @@ export function ReceiptView({ activeOrder, orders, products, depositInstructions
         <div className="qr-panel"><div className="qr-frame"><QRCodeSVG value={JSON.stringify({ id: activeOrder.reference, code: activeOrder.profile.employeeCode, branch: activeOrder.profile.branch })} size={126} level="M" /></div><strong>رمز الاستلام</strong><small>امسح الرمز عند استلام السلة</small></div>
       </div>
       <div className="receipt-footer"><span><ShieldCheck size={16} /> إيصال رقمي معتمد من ناتكو</span><strong dir="ltr">{activeOrder.reference}</strong></div>
-    </motion.article> : <div className="panel history-panel"><div className="history-heading"><span className="section-icon"><Clock3 size={20} /></span><div><h3>سجل طلباتك</h3><p>يمكنك مراجعة طلباتك السابقة واختيار أي منها.</p></div></div>
+    </motion.article> : showHistory ? <div className="panel history-panel"><div className="history-heading"><span className="section-icon"><Clock3 size={20} /></span><div><h3>سجل طلباتك</h3><p>اختر رقم الطلب لعرض الإيصال والتفاصيل.</p></div></div>
       {orders.length === 0 ? <div className="empty-state"><FileCheck2 size={36} /><strong>لا توجد طلبات سابقة</strong><span>بعد تأكيد طلبك ستجده هنا.</span></div> :
         <div className="history-list">{orders.map((order) => <button className="history-row" key={order.id} onClick={() => onSelect(order)}>
           <span className="history-icon"><ShoppingBasket size={19} /></span><span className="history-main"><strong>{order.reference}</strong><small>{new Intl.DateTimeFormat('ar-YE', { dateStyle: 'medium' }).format(new Date(order.createdAt))} · {order.profile.branch}</small></span>
           <span className="history-status">{orderStatusLabels[order.status]}</span><ArrowLeft size={17} />
         </button>)}</div>}
-    </div>}
+    </div> : null}
     <div className="receipt-actions">
       {activeOrder && <button className="whatsapp-button" type="button" onClick={onShare}><span className="whatsapp-mark">◉</span> مشاركة الإيصال عبر واتساب</button>}
       {activeOrder?.status === 'received' && (activeOrder.editCount ?? 0) < 1 &&
@@ -447,8 +448,10 @@ export function ReceiptView({ activeOrder, orders, products, depositInstructions
             <button className="employee-profile-state-button" type="button" disabled={requestBusy || !requestMessage.trim()} onClick={() => void submitOrderAction('delete')}>طلب حذف الطلب</button>
           </div>
         </section>}
-      <button className="primary-button" type="button" onClick={onNew}>طلب جديد <ArrowLeft size={17} /></button>
-      <button className="text-button history-toggle" type="button" onClick={onHistory}><Clock3 size={16} /> عرض الطلبات السابقة</button>
+      {showHistory ? <button className="primary-button" type="button" onClick={onNew}>طلب جديد <ArrowLeft size={17} /></button> : <>
+        <button className="primary-button" type="button" onClick={onNew}>طلب جديد <ArrowLeft size={17} /></button>
+        <button className="text-button history-toggle" type="button" onClick={onHistory}><Clock3 size={16} /> عرض الطلبات السابقة</button>
+      </>}
     </div>
   </div>
 }

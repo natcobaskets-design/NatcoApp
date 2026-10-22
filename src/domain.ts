@@ -1,7 +1,7 @@
 import { Droplets, Leaf, Package, ShoppingBasket, Wheat, type LucideIcon } from 'lucide-react'
 import { Timestamp } from 'firebase/firestore'
 
-export type Screen = 'email' | 'profile' | 'baskets' | 'customize' | 'receipt' | 'admin'
+export type Screen = 'email' | 'profile' | 'baskets' | 'customize' | 'receipt' | 'orders' | 'admin'
 export type EmployeeProfile = {
   email: string
   employeeCode: string

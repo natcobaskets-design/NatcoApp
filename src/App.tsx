@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import {
   onAuthStateChanged, sendEmailVerification, sendPasswordResetEmail,
@@ -49,6 +49,43 @@ function buildEmployeeProfile(
 
 function currentSpendingPeriod(): string {
   return new Date().toISOString().slice(0, 7)
+}
+
+type SavedWorkspace = { screen: Screen; orderId: string }
+
+function loadSavedWorkspace(uid: string): SavedWorkspace | null {
+  try {
+    const value = localStorage.getItem(`natco.workspace.${uid}`)
+    if (!value) return null
+    const parsed: unknown = JSON.parse(value)
+    if (!parsed || typeof parsed !== 'object') return null
+    const saved = parsed as { screen?: unknown; orderId?: unknown }
+    const screens: Screen[] = ['email', 'profile', 'baskets', 'customize', 'receipt', 'orders', 'admin']
+    if (typeof saved.screen !== 'string' || !screens.includes(saved.screen as Screen)) return null
+    return {
+      screen: saved.screen as Screen,
+      orderId: typeof saved.orderId === 'string' ? saved.orderId : '',
+    }
+  } catch (error) {
+    console.warn('Unable to restore the last employee workspace.', error)
+    return null
+  }
+}
+
+function restoredWorkspaceScreen(
+  saved: SavedWorkspace | null,
+  isAdmin: boolean,
+  isEmployee: boolean,
+  hasProfile: boolean,
+): Screen {
+  if (saved?.screen === 'admin' && isAdmin) return 'admin'
+  if (!isEmployee) return isAdmin ? 'admin' : 'email'
+  if (!hasProfile) return 'profile'
+  if (saved?.screen === 'orders' || saved?.screen === 'receipt' ||
+    saved?.screen === 'baskets' || saved?.screen === 'profile') {
+    return saved.screen
+  }
+  return 'baskets'
 }
 
 function withoutMonthlySpendingLimit(profile: EmployeeProfile): EmployeeProfile {
@@ -145,12 +182,19 @@ function App() {
   const [supportPhone, setSupportPhone] = useState('')
   const [supportContactUnavailable, setSupportContactUnavailable] = useState(false)
   const [activeOrder, setActiveOrder] = useState<Order | null>(null)
+  const [selectedOrderId, setSelectedOrderId] = useState('')
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null)
   const [profileReturn, setProfileReturn] = useState<Screen>('baskets')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [currentYear] = useState(() => new Date().getFullYear())
   const identityReady = !authUser || resolvedIdentityUid === authUser.uid
+  const screenRef = useRef(screen)
+  const selectedOrderIdRef = useRef(selectedOrderId)
+  useEffect(() => {
+    screenRef.current = screen
+    selectedOrderIdRef.current = selectedOrderId
+  }, [screen, selectedOrderId])
 
   useEffect(() => {
     if (!firebaseAuth) return
@@ -174,6 +218,7 @@ function App() {
         setExcluded([])
         setPickupBranch('')
         setActiveOrder(null)
+        setSelectedOrderId('')
         setProducts([])
         setOrders([])
         setScreen('email')
@@ -203,9 +248,11 @@ function App() {
         setEmail(normalizedEmail)
         setIsAdmin(true)
         setIsEmployee(false)
-        setScreen('admin')
 
-        if (!normalizedEmail || !user.emailVerified) return
+        if (!normalizedEmail || !user.emailVerified) {
+          setScreen('admin')
+          return
+        }
         const rosterSnapshot = await getDoc(doc(database, 'employee_roster', normalizedEmail))
         const hasEmployeeAccess = rosterSnapshot.exists() && rosterSnapshot.data().active === true
         if (!current) return
@@ -220,6 +267,11 @@ function App() {
           setProfile(currentProfile)
           setPickupBranch(currentProfile.branch)
           setProfileReturn('baskets')
+          const savedWorkspace = loadSavedWorkspace(user.uid)
+          setSelectedOrderId(savedWorkspace?.orderId ?? '')
+          setScreen(restoredWorkspaceScreen(savedWorkspace, true, true, Boolean(savedProfile)))
+        } else {
+          setScreen('admin')
         }
         return
       }
@@ -289,8 +341,10 @@ function App() {
       setProfile(currentProfile)
       setPickupBranch(currentProfile.branch)
       setProfileReturn('baskets')
+      const savedWorkspace = loadSavedWorkspace(user.uid)
+      setSelectedOrderId(savedWorkspace?.orderId ?? '')
       setCounts(Object.fromEntries(defaultBasketDefinitions.map((basket) => [basket.id, 0])))
-      setScreen(savedProfile ? 'baskets' : 'profile')
+      setScreen(restoredWorkspaceScreen(savedWorkspace, false, true, Boolean(savedProfile)))
     }
     void resolveIdentity().catch((error: unknown) => {
       console.error('Unable to validate the signed-in Firebase identity.', error)
@@ -300,6 +354,18 @@ function App() {
     })
     return () => { current = false }
   }, [authReady, authUser, identityRetry])
+
+  useEffect(() => {
+    if (!authUser || !identityReady || (!isAdmin && !isEmployee)) return
+    try {
+      localStorage.setItem(`natco.workspace.${authUser.uid}`, JSON.stringify({
+        screen,
+        orderId: screen === 'receipt' ? activeOrder?.id ?? selectedOrderId : '',
+      } satisfies SavedWorkspace))
+    } catch (error) {
+      console.warn('Unable to save the last employee workspace.', error)
+    }
+  }, [activeOrder?.id, authUser, identityReady, isAdmin, isEmployee, screen, selectedOrderId])
 
   useEffect(() => {
     if (!authUser || !firestore) return
@@ -478,7 +544,12 @@ function App() {
         }).filter((order) => order.status !== 'deleted')
           .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
         setOrders(nextOrders)
-        setActiveOrder((current) => current ? nextOrders.find((item) => item.id === current.id) ?? null : null)
+        setActiveOrder((current) => {
+          const orderId = current?.id ?? (
+            screenRef.current === 'receipt' ? selectedOrderIdRef.current : ''
+          )
+          return orderId ? nextOrders.find((item) => item.id === orderId) ?? null : null
+        })
       },
       (error) => {
         console.error('Unable to load employee orders.', error)
@@ -954,6 +1025,7 @@ function App() {
       }
       setEditingOrderId(null)
       setActiveOrder(order)
+      setSelectedOrderId(order.id)
       setScreen('receipt')
       const editSummary = editingOrderId && activeOrder
         ? orderEditComparison(
@@ -1012,8 +1084,21 @@ function App() {
     setQuantities({ ...order.items })
     setExcluded([...order.excluded])
     setPickupBranch(order.pickupBranch || order.profile.branch)
+    setSelectedOrderId(order.id)
     setEditingOrderId(order.id)
     setScreen('customize')
+  }
+
+  function selectEmployeeOrder(order: Order) {
+    setActiveOrder(order)
+    setSelectedOrderId(order.id)
+    setScreen('receipt')
+  }
+
+  function showEmployeeOrderHistory() {
+    setActiveOrder(null)
+    setSelectedOrderId('')
+    setScreen('orders')
   }
 
   function startNewOrder() {
@@ -1021,6 +1106,7 @@ function App() {
     setQuantities({})
     setExcluded([])
     setActiveOrder(null)
+    setSelectedOrderId('')
     setEditingOrderId(null)
     setScreen('baskets')
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -1040,6 +1126,7 @@ function App() {
     setQuantities({})
     setExcluded([])
     setActiveOrder(null)
+    setSelectedOrderId('')
     setEditingOrderId(null)
     setPassword('')
     setPhone('')
@@ -1114,7 +1201,8 @@ function App() {
     receiptProps={{
       activeOrder, orders: employeeOrders, products, depositInstructions, onEdit: editOrder,
       onRequestAction: requestOrderAction, onNew: startNewOrder,
-      onSelect: setActiveOrder, onHistory: () => setActiveOrder(null),
+      onSelect: selectEmployeeOrder, onHistory: showEmployeeOrderHistory,
+      showHistory: screen === 'orders',
     }}
     onProfileEdit={editProfile}
     onSwitchWorkspace={() => setScreen((current) => current === 'admin'

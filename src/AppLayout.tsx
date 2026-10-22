@@ -25,6 +25,7 @@ const mainTitles: Partial<Record<Screen, PageTitle>> = {
   baskets: { eyebrow: 'اختيارك يصنع الفرق', title: 'اختر السلال الغذائية', description: 'مسموح لك باختيار سلتين كحد أقصى.' },
   customize: { eyebrow: 'على ذوقك', title: 'تخصيص محتويات السلة', description: 'عدّل الأصناف والكميات بما يناسب احتياجات أسرتك.' },
   receipt: { eyebrow: 'تم بنجاح', title: 'إيصال الاستلام', description: 'احتفظ بالإيصال وأبرزه عند استلام سلتك.' },
+  orders: { eyebrow: 'سجل الموظف', title: 'طلباتي السابقة', description: 'اختر رقم الطلب لعرض الإيصال وتفاصيل السلة.' },
 }
 
 type AppLayoutProps = {
@@ -71,12 +72,8 @@ export function AppLayout(props: AppLayoutProps) {
     { title: 'تخصيص الطلب', active: screen === 'customize', done: screen === 'receipt' },
   ]
   function showPreviousOrders() {
-    if (!employeeOrders.length) {
-      setNotice('لا توجد طلبات سابقة لهذا الحساب بعد.')
-      return
-    }
-    props.receiptProps.onSelect(employeeOrders[0])
-    setScreen('receipt')
+    props.receiptProps.onHistory()
+    setScreen('orders')
   }
   useEffect(() => {
     if (!accountMenuOpen) return
@@ -127,10 +124,10 @@ export function AppLayout(props: AppLayoutProps) {
       <div className="sidebar-caption">{screen === 'admin' ? 'إدارة ناتكو المركزية' : 'بوابة خدمات الموظفين'}</div>
       <nav className="side-nav" aria-label="التنقل الرئيسي">
         {authUser && (screen === 'admin' ? <button className="nav-link selected" onClick={() => setScreen('admin')}><ShieldCheck size={19} /><span>لوحة المشرف</span><span className="nav-dot" /></button> : <>
-          <button className={screen !== 'email' ? 'nav-link selected' : 'nav-link'} onClick={() => screen !== 'email' && setScreen('baskets')}>
+          <button className={['profile', 'baskets', 'customize', 'receipt'].includes(screen) ? 'nav-link selected' : 'nav-link'} onClick={() => screen !== 'email' && setScreen('baskets')}>
             <Home size={19} /><span>السلال الغذائية</span>{screen !== 'email' && <span className="nav-dot" />}
           </button>
-          <button className="nav-link" onClick={showPreviousOrders}>
+          <button className={screen === 'orders' ? 'nav-link selected' : 'nav-link'} onClick={showPreviousOrders}>
             <ClipboardList size={19} /><span>طلباتي السابقة</span>
             {employeeOrders.length > 0 && <span className="nav-count">{employeeOrders.length}</span>}
           </button>
@@ -206,7 +203,7 @@ export function AppLayout(props: AppLayoutProps) {
           </div>
         </motion.div>}
 
-        {screen !== 'email' && screen !== 'admin' && <motion.div
+        {screen !== 'email' && screen !== 'admin' && screen !== 'orders' && <motion.div
           className="stepper"
           aria-label="مراحل الطلب"
           initial={reduceMotion ? false : { opacity: 0 }}
@@ -241,9 +238,10 @@ export function AppLayout(props: AppLayoutProps) {
           {screen === 'profile' && <EmployeeProfileForm {...props.profileProps} />}
           {screen === 'baskets' && <BasketSelection {...props.basketProps} />}
           {screen === 'customize' && <BasketCustomization {...props.customizationProps} />}
-          {screen === 'receipt' && <ReceiptView
+          {(screen === 'receipt' || screen === 'orders') && <ReceiptView
             {...props.receiptProps}
             onShare={() => shareOrderReceipt(props.receiptProps.activeOrder, props.receiptProps.products)}
+            showHistory={screen === 'orders'}
           />}
           {screen === 'admin' && isAdmin && authUser && <AdminConsole
             user={authUser}
