@@ -267,6 +267,7 @@
 .product-details > span { color: #9ba1af; font-size: 8px; }
 .excluded-label { color: #b47b48; font-size: 8px; }
 .product-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.product-actions [hidden],.product-details [hidden] { display: none !important; }
 .product-counter { height: 27px; gap: 4px; padding: 2px; }
 .product-counter button { width: 20px; height: 21px; }
 .product-counter > span { min-width: 18px; font-size: 10px; }

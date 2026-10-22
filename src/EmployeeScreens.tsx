@@ -211,7 +211,7 @@ export type BasketSelectionProps = {
 export function BasketSelection({ counts, total, baskets, settings, products, onAdjust, onContinue }: BasketSelectionProps) {
   const reduceMotion = useReducedMotion()
   return <div className="basket-layout">
-    <div className="basket-cards">{baskets.filter((basket) => basket.active).map((basket, index) => {
+    <div className="basket-cards">{baskets.filter((basket) => basket.active && basket.maxPerEmployee > 0).map((basket, index) => {
       const Icon = basketIcons[basket.kind] ?? basketIcons.family
       const amount = counts[basket.id] ?? 0
       const basketProducts = products.filter((product) => basketIncludesProduct(basket, product))
@@ -334,12 +334,25 @@ export function BasketCustomization(props: CustomizationProps) {
           <strong className="product-agent-price">{productAgentPrice(product, props.company) === null
             ? 'السعر غير محدد'
             : `${formatYER(productAgentPrice(product, props.company) ?? 0)} / وحدة`}</strong>
-          {isExcluded && <small className="excluded-label">مستبعد من السلة</small>}
+          <small className="excluded-label" hidden={!isExcluded}>مستبعد من السلة</small>
         </div>
         <div className="product-actions">
-          {quantity > 0 && <div className="counter product-counter"><button type="button" aria-label={`تقليل ${product.name}`} onClick={() => props.onAdjust(product.id, -1)}><Minus size={14} /></button><span>{quantity}</span><button type="button" aria-label={`زيادة ${product.name}`} onClick={() => props.onAdjust(product.id, 1)}><Plus size={15} /></button></div>}
-          {quantity === 0 && <button className="add-product" type="button" onClick={() => props.onAdjust(product.id, 1)}><Plus size={15} /> إضافة</button>}
-          <button className={`exclude-button${isExcluded ? ' is-excluded' : ''}`} type="button" onClick={() => props.onExclude(product.id)}>{isExcluded ? <><Check size={15} /> مستبعد</> : <><Trash2 size={15} /> استبعاد</>}</button>
+          <div className="counter product-counter" hidden={quantity === 0}>
+            <button type="button" aria-label={`تقليل ${product.name}`} onClick={() => props.onAdjust(product.id, -1)}><Minus size={14} /></button>
+            <span translate="no">{quantity}</span>
+            <button type="button" aria-label={`زيادة ${product.name}`} onClick={() => props.onAdjust(product.id, 1)}><Plus size={15} /></button>
+          </div>
+          <button className="add-product" type="button" hidden={quantity > 0} onClick={() => props.onAdjust(product.id, 1)}><Plus size={15} /> إضافة</button>
+          <button
+            className={`exclude-button${isExcluded ? ' is-excluded' : ''}`}
+            type="button"
+            aria-pressed={isExcluded}
+            aria-label={isExcluded ? `إلغاء استبعاد ${product.name}` : `استبعاد ${product.name}`}
+            onClick={() => props.onExclude(product.id)}
+          >
+            {isExcluded ? <Check size={15} /> : <Trash2 size={15} />}
+            <span>استبعاد</span>
+          </button>
         </div>
       </motion.article>
         })}</div>}

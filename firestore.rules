@@ -125,7 +125,11 @@ service cloud.firestore {
 
     function countBasketSelections(ids, basketId) {
       return (ids.size() > 0 && ids[0] == basketId ? 1 : 0)
-        + (ids.size() > 1 && ids[1] == basketId ? 1 : 0);
+        + (ids.size() > 1 && ids[1] == basketId ? 1 : 0)
+        + (ids.size() > 2 && ids[2] == basketId ? 1 : 0)
+        + (ids.size() > 3 && ids[3] == basketId ? 1 : 0)
+        + (ids.size() > 4 && ids[4] == basketId ? 1 : 0)
+        + (ids.size() > 5 && ids[5] == basketId ? 1 : 0);
     }
 
     function validBasketAt(ids, index) {
@@ -149,16 +153,20 @@ service cloud.firestore {
         : 2;
       return ids is list
         && ids.size() > 0
-        && ids.size() <= 2
+        && ids.size() <= 6
         && maximum is int
         && maximum >= 1
-        && maximum <= 2
+        && maximum <= 6
         && ids.size() <= maximum
         && baskets is map
         && baskets.size() > 0
         && baskets.size() <= 10
         && (ids.size() <= 0 || validBasketAt(ids, 0))
-        && (ids.size() <= 1 || validBasketAt(ids, 1));
+        && (ids.size() <= 1 || validBasketAt(ids, 1))
+        && (ids.size() <= 2 || validBasketAt(ids, 2))
+        && (ids.size() <= 3 || validBasketAt(ids, 3))
+        && (ids.size() <= 4 || validBasketAt(ids, 4))
+        && (ids.size() <= 5 || validBasketAt(ids, 5));
     }
 
     function validMonthlySpendMutation(uid, oldSpent) {
@@ -510,7 +518,7 @@ service cloud.firestore {
         && request.resource.data.description.size() <= 160
         && request.resource.data.maxPerEmployee is int
         && request.resource.data.maxPerEmployee >= 0
-        && request.resource.data.maxPerEmployee <= 2
+        && request.resource.data.maxPerEmployee <= 6
         && request.resource.data.productIds is list
         && request.resource.data.productIds.size() <= 50
         && (!request.resource.data.keys().hasAny(['includedSubcategories'])
@@ -826,7 +834,7 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['maxTotalPerEmployee', 'updatedAt', 'updatedBy'])
         && request.resource.data.maxTotalPerEmployee is int
         && request.resource.data.maxTotalPerEmployee >= 1
-        && request.resource.data.maxTotalPerEmployee <= 2
+        && request.resource.data.maxTotalPerEmployee <= 6
         && request.resource.data.updatedAt == request.time
         && request.resource.data.updatedBy == request.auth.uid;
       allow create, update: if isAdmin() && settingId == 'support_contact'

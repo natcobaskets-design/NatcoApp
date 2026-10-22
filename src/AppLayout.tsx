@@ -14,7 +14,7 @@ import {
   type ReceiptProps,
 } from './EmployeeScreens'
 import {
-  defaultOrganizationOptions, orderStatusLabels, type CatalogProduct, type EmployeeProfile, type Order,
+  defaultOrganizationOptions, orderStatusLabels, type BasketSelectionSettings, type CatalogProduct, type EmployeeProfile, type Order,
   type OrderStatus, type OrganizationOptions, type Screen,
 } from './domain'
 
@@ -88,7 +88,7 @@ function loadDismissedNotificationKeys(uid?: string): Set<string> {
 const mainTitles: Partial<Record<Screen, PageTitle>> = {
   admin: { eyebrow: 'إدارة مركزية', title: 'لوحة المشرف', description: 'تابع طلبات الموظفين وأدر صور المنتجات والصلاحيات.' },
   profile: { eyebrow: 'خطوتك الأولى', title: 'بيانات الموظف', description: 'معلوماتك تساعدنا نوصل السلة لمكانك بكل سهولة.' },
-  baskets: { eyebrow: 'اختيارك يصنع الفرق', title: 'اختر السلال الغذائية', description: 'مسموح لك باختيار سلتين كحد أقصى.' },
+  baskets: { eyebrow: 'اختيارك يصنع الفرق', title: 'اختر السلال الغذائية', description: 'اختر السلال ضمن الحد الإجمالي المسموح.' },
   customize: { eyebrow: 'على ذوقك', title: 'تخصيص محتويات السلة', description: 'عدّل الأصناف والكميات بما يناسب احتياجات أسرتك.' },
   receipt: { eyebrow: 'تم بنجاح', title: 'إيصال الاستلام', description: 'احتفظ بالإيصال وأبرزه عند استلام سلتك.' },
   orders: { eyebrow: 'سجل الموظف', title: 'طلباتي السابقة', description: 'اختر رقم الطلب لعرض الإيصال وتفاصيل السلة.' },
@@ -111,6 +111,7 @@ type AppLayoutProps = {
   notificationsLoaded: boolean
   notificationOrderId: string
   totalBaskets: number
+  basketSelectionSettings: BasketSelectionSettings
   selectedProducts: number
   employeeOrders: Order[]
   notifications: AppNotification[]
@@ -127,7 +128,7 @@ type AppLayoutProps = {
 
 export function AppLayout(props: AppLayoutProps) {
   const { screen, setScreen, profile, email, isAdmin, isEmployee, authUser, currentYear, firebaseConfigured,
-    notice, setNotice, totalBaskets, selectedProducts, employeeOrders } = props
+    notice, setNotice, totalBaskets, basketSelectionSettings, selectedProducts, employeeOrders } = props
   const reduceMotion = useReducedMotion()
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -655,7 +656,7 @@ export function AppLayout(props: AppLayoutProps) {
               <h2>{mainTitles[screen]?.title ?? 'ابدأ رحلتك مع ناتكو'}</h2>
               <p>{mainTitles[screen]?.description ?? 'سجّل دخولك برقم الهاتف وكلمة المرور للوصول إلى سلتك الغذائية.'}</p>
             </div>
-            {screen === 'baskets' && <span className="quota-chip"><ShoppingBasket size={15} /> {totalBaskets} من 2 سلة</span>}
+            {screen === 'baskets' && <span className="quota-chip"><ShoppingBasket size={15} /> {totalBaskets} من {basketSelectionSettings.maxTotalPerEmployee} سلة</span>}
             {screen === 'customize' && <span className="quota-chip"><Package size={15} /> {selectedProducts} أصناف مختارة</span>}
           </div>}
 

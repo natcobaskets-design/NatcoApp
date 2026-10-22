@@ -193,7 +193,7 @@ export function parseBasketDefinition(id: string, data: Record<string, unknown>)
     !['essential', 'family', 'custom'].includes(String(data.kind)) ||
     typeof data.description !== 'string' ||
     !Number.isInteger(data.maxPerEmployee) || Number(data.maxPerEmployee) < 0 ||
-    Number(data.maxPerEmployee) > 2 ||
+    Number(data.maxPerEmployee) > 6 ||
     !Array.isArray(data.productIds) || !data.productIds.every((value) => typeof value === 'string')) return null
   if ((data.includedSubcategories !== undefined &&
       (!Array.isArray(data.includedSubcategories) ||
