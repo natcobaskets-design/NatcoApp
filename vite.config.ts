@@ -10,8 +10,8 @@ export default defineConfig(({ mode }) => {
     authDomain: env.VITE_FIREBASE_AUTH_DOMAIN ?? '',
     projectId: env.VITE_FIREBASE_PROJECT_ID ?? '',
     appId: env.VITE_FIREBASE_APP_ID ?? '',
-    messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID ??
-      env.VITE_FIREBASE_APP_ID?.split(':')[1] ?? '',
+    messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID ||
+      env.VITE_FIREBASE_APP_ID?.split(':')[1] || '',
   }
 
   return {
@@ -23,6 +23,11 @@ export default defineConfig(({ mode }) => {
         closeBundle() {
           const workerPath = resolve('dist/firebase-messaging-sw.js')
           const worker = readFileSync(workerPath, 'utf8')
+          if (!firebaseConfig.messagingSenderId) {
+            throw new Error(
+              'Firebase messaging sender ID is missing; set VITE_FIREBASE_MESSAGING_SENDER_ID or VITE_FIREBASE_APP_ID.',
+            )
+          }
           if (!worker.includes('__NATCO_FIREBASE_CONFIG__')) {
             throw new Error('Firebase messaging worker config placeholder was not found.')
           }
