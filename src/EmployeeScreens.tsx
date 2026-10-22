@@ -7,7 +7,7 @@ import {
   Trash2, X,
 } from 'lucide-react'
 import {
-  basketIcons, formatYER, orderStatusLabels, productAgentPrice, productIcons,
+  basketIcons, basketIncludesProduct, formatYER, orderStatusLabels, productAgentPrice, productIcons,
   productDepartments, type BasketCounts, type BasketDefinition, type BasketSelectionSettings,
   type CatalogProduct, type EmployeeProfile, type Order, type OrganizationOptions, type ProductDepartmentId,
 } from './domain'
@@ -214,7 +214,7 @@ export function BasketSelection({ counts, total, baskets, settings, products, on
     <div className="basket-cards">{baskets.filter((basket) => basket.active).map((basket, index) => {
       const Icon = basketIcons[basket.kind] ?? basketIcons.family
       const amount = counts[basket.id] ?? 0
-      const basketProducts = products.filter((product) => basket.productIds.includes(product.id))
+      const basketProducts = products.filter((product) => basketIncludesProduct(basket, product))
       return <motion.article
         className={`basket-card${amount > 0 ? ' basket-selected' : ''}`}
         key={basket.id}

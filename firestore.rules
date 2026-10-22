@@ -500,7 +500,7 @@ service cloud.firestore {
         ])
         && request.resource.data.keys().hasOnly([
           'name', 'kind', 'description', 'maxPerEmployee', 'productIds', 'active',
-          'updatedAt', 'updatedBy'
+          'includedSubcategories', 'excludedProductIds', 'updatedAt', 'updatedBy'
         ])
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
@@ -513,6 +513,12 @@ service cloud.firestore {
         && request.resource.data.maxPerEmployee <= 2
         && request.resource.data.productIds is list
         && request.resource.data.productIds.size() <= 50
+        && (!request.resource.data.keys().hasAny(['includedSubcategories'])
+          || (request.resource.data.includedSubcategories is list
+            && request.resource.data.includedSubcategories.size() <= 60))
+        && (!request.resource.data.keys().hasAny(['excludedProductIds'])
+          || (request.resource.data.excludedProductIds is list
+            && request.resource.data.excludedProductIds.size() <= 50))
         && request.resource.data.active is bool
         && request.resource.data.updatedAt == request.time
         && request.resource.data.updatedBy == request.auth.uid;

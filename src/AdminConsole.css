@@ -475,3 +475,147 @@
   .admin-checkbox { min-height: 40px; font-size: 12px; }
   .admin-form-actions button { min-height: 42px; font-size: 12px; }
 }
+
+.basket-management { display: grid; gap: 18px; padding: 22px; border-radius: 16px; background: #f8f9fc; }
+.basket-admin-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; color: #fff; background: linear-gradient(115deg,#0f1b47,#1b3476); }
+.basket-admin-title { display: flex; align-items: center; gap: 15px; min-width: 0; }
+.basket-admin-icon { width: 46px; height: 46px; flex: 0 0 46px; display: grid; place-items: center; border: 1px solid #ffffff2c; border-radius: 13px; color: #ffc080; background: #ffffff12; }
+.basket-admin-eyebrow { display: flex; align-items: center; gap: 6px; color: #ffc080; font-size: 10px; font-weight: 700; }
+.basket-admin-title h2 { margin: 6px 0 4px; color: #fff; font-size: 19px; }
+.basket-admin-title p { max-width: 660px; margin: 0; color: #d4dced; font-size: 11px; line-height: 1.8; }
+.basket-primary-action,.basket-secondary-action,.basket-save-button { min-height: 39px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 13px; border: 0; border-radius: 9px; color: #fff; background: #162766; font: inherit; font-size: 11px; font-weight: 700; white-space: nowrap; cursor: pointer; transition: background .16s,transform .16s; }
+.basket-primary-action { background: #f58220; }
+.basket-primary-action:hover:not(:disabled) { background: #e7700e; }
+.basket-secondary-action { border: 1px solid #e1e5ed; color: #34405b; background: #fff; }
+.basket-secondary-action:hover:not(:disabled) { background: #f4f6fa; }
+.basket-save-button:hover:not(:disabled) { background: #0f1b47; }
+.basket-primary-action:disabled,.basket-secondary-action:disabled,.basket-save-button:disabled { cursor: not-allowed; opacity: .55; }
+.basket-admin-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+.basket-admin-metrics article { min-width: 0; display: grid; grid-template-columns: 38px 1fr; align-items: center; column-gap: 11px; padding: 15px; border: 1px solid #e8ebf1; border-radius: 12px; background: #fff; }
+.basket-admin-metrics article > span { width: 37px; height: 37px; grid-row: span 2; display: grid; place-items: center; border-radius: 10px; color: #e87819; background: #fff2e7; }
+.basket-admin-metrics small { color: #7b8498; font-size: 10px; }
+.basket-admin-metrics strong { color: #172650; font-size: 18px; }
+.basket-admin-metrics strong small { font-size: 10px; font-weight: 500; }
+.basket-admin-alert { display: flex; align-items: flex-start; gap: 11px; padding: 13px 15px; border: 1px solid #f0c9a5; border-radius: 11px; color: #8a4b15; background: #fff8f0; }
+.basket-admin-alert > svg { flex: 0 0 auto; margin-top: 2px; color: #e5781d; }
+.basket-admin-alert div { display: grid; gap: 4px; }
+.basket-admin-alert strong { font-size: 11px; }
+.basket-admin-alert span { font-size: 10px; line-height: 1.7; }
+.basket-global-limit { display: grid; grid-template-columns: minmax(0,1fr) minmax(180px,240px) auto; align-items: center; gap: 16px; padding: 17px; border: 1px solid #e8ebf1; border-radius: 13px; background: #fff; }
+.basket-section-heading,.basket-editor-heading > div { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.basket-section-icon { width: 37px; height: 37px; flex: 0 0 37px; display: grid; place-items: center; border-radius: 10px; color: #f58220; background: #fff3e8; }
+.basket-section-heading h3,.basket-editor-heading h3 { margin: 0; color: #1c294a; font-size: 13px; }
+.basket-section-heading p,.basket-editor-heading p { margin: 4px 0 0; color: #7d869a; font-size: 10px; line-height: 1.6; }
+.basket-limit-control,.basket-field { min-width: 0; display: grid; gap: 7px; color: #536078; font-size: 10px; font-weight: 650; }
+.basket-limit-control select,.basket-field input,.basket-field select,.basket-field textarea { width: 100%; min-width: 0; min-height: 40px; padding: 8px 11px; border: 1px solid #dfe3eb; border-radius: 8px; color: #27334c; background: #fff; font: inherit; font-size: 12px; }
+.basket-field textarea { resize: vertical; line-height: 1.7; }
+.basket-limit-control select:focus,.basket-field input:focus,.basket-field select:focus,.basket-field textarea:focus { border-color: #98a8d1; outline: 3px solid #16276613; }
+.basket-catalog-panel,.basket-editor { min-width: 0; padding: 18px; border: 1px solid #e8ebf1; border-radius: 13px; background: #fff; }
+.basket-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.basket-list-heading h3 { margin: 0; color: #1c294a; font-size: 13px; }
+.basket-list-heading p { margin: 5px 0 0; color: #828a9d; font-size: 10px; line-height: 1.6; }
+.basket-search { width: min(260px,40%); min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid #e1e5ed; border-radius: 8px; color: #9299a8; }
+.basket-search:focus-within { border-color: #98a8d1; box-shadow: 0 0 0 3px #1627660d; }
+.basket-search input { width: 100%; min-width: 0; height: 34px; border: 0; outline: 0; color: #303b54; background: transparent; font: inherit; font-size: 11px; }
+.basket-definition-list { display: grid; gap: 10px; }
+.basket-definition-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px; border: 1px solid #e9ecf2; border-radius: 11px; background: #fff; transition: border-color .16s,box-shadow .16s; }
+.basket-definition-card:hover { border-color: #d7ddeb; box-shadow: 0 5px 18px #1627660a; }
+.basket-definition-card.is-inactive { background: #fafbfc; }
+.basket-card-main { min-width: 0; display: flex; align-items: flex-start; gap: 12px; }
+.basket-card-mark { width: 38px; height: 38px; flex: 0 0 38px; display: grid; place-items: center; border-radius: 10px; color: #263c79; background: #eef1fa; }
+.basket-card-copy { min-width: 0; }
+.basket-card-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.basket-card-title strong { color: #1c294a; font-size: 12px; }
+.basket-status-active,.basket-status-inactive { padding: 3px 7px; border-radius: 20px; color: #177246; background: #e9f6ef; font-size: 9px; }
+.basket-status-inactive { color: #737b8c; background: #f0f1f4; }
+.basket-card-copy > p { margin: 5px 0 8px; color: #798298; font-size: 10px; }
+.basket-card-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.basket-card-tags span { padding: 4px 7px; border-radius: 6px; color: #536078; background: #f4f6f9; font-size: 9px; }
+.basket-card-categories,.basket-card-exclusions { display: block; margin-top: 7px; color: #667189; font-size: 9px; line-height: 1.6; }
+.basket-card-exclusions { color: #b16b22; }
+.basket-card-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; }
+.basket-view-button,.basket-delete-button,.basket-close-editor { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 9px; border: 1px solid #e2e6ee; border-radius: 8px; color: #34415d; background: #fff; font: inherit; font-size: 10px; cursor: pointer; }
+.basket-view-button:hover:not(:disabled) { border-color: #cdd5e5; background: #f8f9fc; }
+.basket-delete-button { width: 35px; padding: 0; color: #b54742; }
+.basket-delete-button:hover:not(:disabled) { border-color: #efc8c6; background: #fff5f4; }
+.basket-view-button:disabled,.basket-delete-button:disabled { cursor: not-allowed; opacity: .55; }
+.basket-empty-state { min-height: 150px; display: grid; justify-items: center; align-content: center; gap: 9px; padding: 20px; color: #7b8498; text-align: center; }
+.basket-empty-state > span { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; color: #e7781a; background: #fff2e7; }
+.basket-empty-state > strong { color: #26334f; font-size: 12px; }
+.basket-empty-state > p { max-width: 460px; margin: 0; font-size: 10px; line-height: 1.7; }
+.basket-empty-state > div { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
+.basket-editor { scroll-margin-top: 85px; }
+.basket-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; }
+.basket-close-editor { width: 36px; padding: 0; }
+.basket-editor-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.basket-field > span b { color: #e5781d; }
+.basket-field > small { color: #80899b; font-size: 9px; font-weight: 400; line-height: 1.6; }
+.basket-content-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 23px 0 11px; }
+.basket-content-heading h4 { margin: 0; color: #1d2947; font-size: 12px; }
+.basket-content-heading p { margin: 4px 0 0; color: #80899b; font-size: 10px; line-height: 1.6; }
+.basket-content-heading > span { padding: 6px 9px; border-radius: 20px; color: #a44f0d; background: #fff2e7; font-size: 9px; white-space: nowrap; }
+.basket-departments { display: grid; gap: 8px; }
+.basket-department,.basket-subcategory { min-width: 0; border: 1px solid #e8ebf1; border-radius: 9px; background: #fff; }
+.basket-department > summary,.basket-subcategory > summary { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; color: #3a4762; cursor: pointer; list-style: none; }
+.basket-department > summary::-webkit-details-marker,.basket-subcategory > summary::-webkit-details-marker { display: none; }
+.basket-department > summary > span { display: flex; align-items: center; gap: 9px; }
+.basket-department > summary strong { color: #1e2d50; font-size: 11px; }
+.basket-department > summary small,.basket-subcategory > summary small { color: #8790a2; font-size: 9px; font-weight: 400; }
+.basket-department[open] > summary,.basket-subcategory[open] > summary { border-bottom: 1px solid #edf0f4; }
+.basket-department[open] > summary > svg,.basket-subcategory[open] > summary > svg { transform: rotate(180deg); }
+.basket-subcategory-list { display: grid; gap: 7px; padding: 9px; background: #fafbfd; }
+.basket-subcategory > summary { min-height: 42px; }
+.basket-subcategory > summary strong { color: #4a5670; font-size: 10px; }
+.basket-subcategory > summary small { margin-right: auto; }
+.basket-departments input[type="checkbox"],.basket-active-toggle input[type="checkbox"] { width: 17px; height: 17px; flex: 0 0 17px; accent-color: #f58220; cursor: pointer; }
+.basket-subcategory-body { padding: 9px 12px 12px; }
+.basket-category-toggle { display: flex; align-items: center; gap: 8px; padding: 7px 8px; color: #536078; font-size: 10px; cursor: pointer; }
+.basket-category-toggle strong { font-weight: 650; }
+.basket-product-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px 10px; padding: 9px 14px 12px; }
+.basket-product-options label { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 7px; color: #4d5971; background: #fff; font-size: 10px; cursor: pointer; }
+.basket-product-options label:hover { background: #f5f6f9; }
+.basket-product-options label > span { min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.basket-product-options label > span small { color: #a0693a; font-size: 8px; }
+.basket-product-options .product-inactive { opacity: .65; }
+.basket-no-products { display: block; padding: 9px; color: #858da0; font-size: 9px; }
+.basket-active-toggle { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 12px; border: 1px solid #e8ebf1; border-radius: 9px; color: #35415c; background: #fafbfd; }
+.basket-active-toggle > span { display: grid; gap: 4px; }
+.basket-active-toggle strong { font-size: 10px; }
+.basket-active-toggle small { color: #7c869a; font-size: 9px; line-height: 1.5; }
+.basket-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.basket-spinner { animation: basket-spin 1s linear infinite; }
+@keyframes basket-spin { to { transform: rotate(360deg); } }
+
+@media (max-width:760px) {
+  .basket-management { gap: 13px; padding: 13px; border-radius: 12px; }
+  .basket-admin-header { align-items: flex-start; flex-direction: column; padding: 16px; }
+  .basket-admin-header > button { width: 100%; min-height: 42px; }
+  .basket-admin-title h2 { font-size: 17px; }
+  .basket-admin-title p { font-size: 10px; }
+  .basket-admin-metrics { grid-template-columns: 1fr; gap: 8px; }
+  .basket-admin-metrics article { padding: 11px 13px; }
+  .basket-global-limit { grid-template-columns: 1fr; gap: 12px; padding: 14px; }
+  .basket-global-limit .basket-save-button { min-height: 42px; }
+  .basket-catalog-panel,.basket-editor { padding: 13px; }
+  .basket-list-heading { align-items: stretch; flex-direction: column; }
+  .basket-search { width: 100%; min-height: 42px; }
+  .basket-search input { font-size: 16px; }
+  .basket-definition-card { align-items: stretch; flex-direction: column; }
+  .basket-card-actions { justify-content: flex-end; }
+  .basket-view-button,.basket-delete-button { min-height: 40px; }
+  .basket-editor-fields { grid-template-columns: 1fr; gap: 12px; }
+  .basket-field input,.basket-field select,.basket-field textarea { min-height: 44px; font-size: 16px; }
+  .basket-product-options { grid-template-columns: 1fr; }
+  .basket-product-options label { min-height: 39px; }
+  .basket-editor-actions { display: grid; grid-template-columns: 1fr; }
+  .basket-editor-actions > button { min-height: 43px; }
+}
+@media (max-width:420px) {
+  .basket-admin-title { align-items: flex-start; gap: 10px; }
+  .basket-admin-icon { width: 38px; height: 38px; flex-basis: 38px; }
+  .basket-admin-title h2 { font-size: 15px; }
+  .basket-content-heading { align-items: flex-start; flex-direction: column; }
+  .basket-department > summary > span { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .basket-card-main { gap: 8px; }
+  .basket-card-mark { width: 33px; height: 33px; flex-basis: 33px; }
+}

@@ -14,7 +14,7 @@ import { createEmployeeSignupAccount, firebaseAuth, firebaseConfigured, firebase
 import {
   blankProfile, parseCatalogProduct, parseOrder, parseProfile, productAgentPrice,
   defaultBasketDefinitions, defaultBasketSelectionSettings, defaultOrganizationOptions,
-  orderStatusLabels, parseBasketDefinition, parseOrganizationOptions, type BasketCounts,
+  basketIncludesProduct, orderStatusLabels, parseBasketDefinition, parseOrganizationOptions, type BasketCounts,
   type CatalogProduct, type EmployeeProfile, type Order, type OrderStatus,
   type OrganizationOptions, type Screen,
 } from './domain'
@@ -930,7 +930,7 @@ function App() {
     const selectedBaskets = new Set(basketDefinitions.filter((basket) => (counts[basket.id] ?? 0) > 0).map((basket) => basket.id))
     const next = Object.fromEntries(products.map((product) => {
       const matchingBaskets = basketDefinitions.filter((basket) =>
-        selectedBaskets.has(basket.id) && basket.productIds.includes(product.id))
+        selectedBaskets.has(basket.id) && basketIncludesProduct(basket, product))
       const amount = matchingBaskets.reduce((sum, basket) => sum + (counts[basket.id] ?? 0), 0)
       return [product.id, amount]
     }))
@@ -1055,7 +1055,7 @@ function App() {
         email: employeeEmail,
         employeeCode: profile.employeeCode,
         profile: orderProfile,
-        baskets: { ...counts },
+        baskets: Object.fromEntries(Object.entries(counts).filter(([, amount]) => amount > 0)),
         basketSelections: Object.entries(counts).flatMap(([basketId, amount]) =>
           Array.from({ length: amount }, () => basketId)),
         items: { ...quantities },

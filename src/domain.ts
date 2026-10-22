@@ -25,6 +25,8 @@ export type BasketDefinition = {
   description: string
   maxPerEmployee: number
   productIds: string[]
+  includedSubcategories: string[]
+  excludedProductIds: string[]
   active: boolean
 }
 export type BasketSelectionSettings = { maxTotalPerEmployee: number }
@@ -142,10 +144,24 @@ export function parseOrganizationOptions(data: Record<string, unknown>): Organiz
   return { companies: companyOptions, branches: branchOptions }
 }
 export const defaultBasketDefinitions: BasketDefinition[] = [
-  { id: 'essential', name: 'السلة الأساسية', kind: 'essential', description: 'احتياجات البيت اليومية', maxPerEmployee: 2, productIds: ['oil', 'rice', 'sugar'], active: true },
-  { id: 'family', name: 'السلة العائلية', kind: 'family', description: 'خيارات أكثر لجميع أفراد الأسرة', maxPerEmployee: 2, productIds: ['powder-milk', 'fresh-milk', 'pasta', 'tuna'], active: true },
+  { id: 'essential', name: 'السلة الأساسية', kind: 'essential', description: 'احتياجات البيت اليومية', maxPerEmployee: 2, productIds: ['oil', 'rice', 'sugar'], includedSubcategories: [], excludedProductIds: [], active: true },
+  { id: 'family', name: 'السلة العائلية', kind: 'family', description: 'خيارات أكثر لجميع أفراد الأسرة', maxPerEmployee: 2, productIds: ['powder-milk', 'fresh-milk', 'pasta', 'tuna'], includedSubcategories: [], excludedProductIds: [], active: true },
 ]
 export const defaultBasketSelectionSettings: BasketSelectionSettings = { maxTotalPerEmployee: 2 }
+
+export function basketSubcategoryKey(departmentId: string, subcategory: string): string {
+  return `${departmentId}::${subcategory}`
+}
+
+export function basketIncludesProduct(
+  basket: Pick<BasketDefinition, 'productIds' | 'includedSubcategories' | 'excludedProductIds'>,
+  product: CatalogProduct,
+): boolean {
+  if (basket.excludedProductIds.includes(product.id)) return false
+  return basket.productIds.includes(product.id) ||
+    basket.includedSubcategories.includes(basketSubcategoryKey(product.department, product.subcategory))
+}
+
 export const basketIcons: Record<string, LucideIcon> = {
   grain: Wheat,
   family: ShoppingBasket,
@@ -179,6 +195,14 @@ export function parseBasketDefinition(id: string, data: Record<string, unknown>)
     !Number.isInteger(data.maxPerEmployee) || Number(data.maxPerEmployee) < 0 ||
     Number(data.maxPerEmployee) > 2 ||
     !Array.isArray(data.productIds) || !data.productIds.every((value) => typeof value === 'string')) return null
+  if ((data.includedSubcategories !== undefined &&
+      (!Array.isArray(data.includedSubcategories) ||
+        data.includedSubcategories.length > 60 ||
+        !data.includedSubcategories.every((value) => typeof value === 'string'))) ||
+    (data.excludedProductIds !== undefined &&
+      (!Array.isArray(data.excludedProductIds) ||
+        data.excludedProductIds.length > 50 ||
+        !data.excludedProductIds.every((value) => typeof value === 'string')))) return null
   return {
     id,
     name: data.name.trim(),
@@ -186,6 +210,8 @@ export function parseBasketDefinition(id: string, data: Record<string, unknown>)
     description: data.description,
     maxPerEmployee: Number(data.maxPerEmployee),
     productIds: data.productIds as string[],
+    includedSubcategories: (data.includedSubcategories ?? []) as string[],
+    excludedProductIds: (data.excludedProductIds ?? []) as string[],
     active: data.active !== false,
   }
 }
